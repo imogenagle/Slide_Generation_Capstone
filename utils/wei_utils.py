@@ -24,6 +24,7 @@ from utils.pptx_utils import *
 from utils.critic_utils import *
 from docling_core.types.doc import TextItem
 from openai import OpenAI
+from slidegen_openai_utils import resolve_model_platform
    
 import os
 from typing import Optional, Tuple
@@ -250,25 +251,25 @@ def get_agent_config(model_type):
         agent_config = {
             "model_type": ModelType.O3_MINI,
             "model_config": ChatGPTConfig().as_dict(),
-            "model_platform": ModelPlatformType.OPENAI,
+            "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
         }
     elif model_type == 'gpt-4.1':
         agent_config = {
             "model_type": ModelType.GPT_4_1,
             "model_config": ChatGPTConfig().as_dict(),
-            "model_platform": ModelPlatformType.OPENAI,
+            "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
         }
     elif model_type == 'gpt-4.1-mini':
         agent_config = {
             "model_type": ModelType.GPT_4_1_MINI,
             "model_config": ChatGPTConfig().as_dict(),
-            "model_platform": ModelPlatformType.OPENAI,
+            "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
         }
     elif model_type == '4o':
         agent_config = {
             "model_type": ModelType.GPT_4O,
             "model_config": ChatGPTConfig().as_dict(),
-            "model_platform": ModelPlatformType.OPENAI,
+            "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
             # "model_name": '4o'
         }
     elif model_type in ("gpt-5", "gpt5"):
@@ -276,7 +277,7 @@ def get_agent_config(model_type):
         agent_config = {
             "model_type": ModelType.GPT_5,  
             "model_config": ChatGPTConfig().as_dict(),
-            "model_platform": ModelPlatformType.OPENAI,
+            "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
             "model_name": "gpt-5",  
         }
 
@@ -284,20 +285,20 @@ def get_agent_config(model_type):
         agent_config = {
             "model_type": ModelType.GPT_4O_MINI,
             "model_config": ChatGPTConfig().as_dict(),
-            "model_platform": ModelPlatformType.OPENAI,
+            "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
         }
     elif model_type == 'o1':
         agent_config = {
             "model_type": ModelType.O1,
             "model_config": ChatGPTConfig().as_dict(),
-            "model_platform": ModelPlatformType.OPENAI,
+            "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
             # "model_name": 'o1'
         }
     elif model_type == 'o3':
         agent_config = {
             "model_type": ModelType.O3,
             "model_config": ChatGPTConfig().as_dict(),
-            "model_platform": ModelPlatformType.OPENAI,
+            "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
         }
     elif model_type == 'vllm_qwen_vl':
         agent_config = {

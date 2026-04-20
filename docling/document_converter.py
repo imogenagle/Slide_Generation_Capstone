@@ -9,16 +9,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Type, Union
 from pydantic import BaseModel, ConfigDict, model_validator, validate_call
 
 from docling.backend.abstract_backend import AbstractDocumentBackend
-from docling.backend.asciidoc_backend import AsciiDocBackend
-from docling.backend.docling_parse_v2_backend import DoclingParseV2DocumentBackend
-from docling.backend.html_backend import HTMLDocumentBackend
-from docling.backend.json.docling_json_backend import DoclingJSONBackend
-from docling.backend.md_backend import MarkdownDocumentBackend
-from docling.backend.msexcel_backend import MsExcelDocumentBackend
-from docling.backend.mspowerpoint_backend import MsPowerpointDocumentBackend
-from docling.backend.msword_backend import MsWordDocumentBackend
-from docling.backend.xml.pubmed_backend import PubMedDocumentBackend
-from docling.backend.xml.uspto_backend import PatentUsptoDocumentBackend
+from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 from docling.datamodel.base_models import (
     ConversionStatus,
     DoclingComponentType,
@@ -45,6 +36,56 @@ from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
 from docling.utils.utils import chunkify
 
 _log = logging.getLogger(__name__)
+
+try:
+    from docling.backend.docling_parse_v2_backend import DoclingParseV2DocumentBackend
+except Exception:
+    DoclingParseV2DocumentBackend = PyPdfiumDocumentBackend
+
+
+def _optional_backend(module_path: str, class_name: str):
+    try:
+        module = __import__(module_path, fromlist=[class_name])
+        return getattr(module, class_name)
+    except Exception as exc:
+        class MissingBackend(AbstractDocumentBackend):
+            def __init__(self, *args, **kwargs):
+                raise ImportError(
+                    f"{class_name} is unavailable because its optional "
+                    f"dependencies could not be imported: {exc}"
+                )
+
+        MissingBackend.__name__ = class_name
+        return MissingBackend
+
+
+AsciiDocBackend = _optional_backend(
+    "docling.backend.asciidoc_backend", "AsciiDocBackend"
+)
+HTMLDocumentBackend = _optional_backend(
+    "docling.backend.html_backend", "HTMLDocumentBackend"
+)
+DoclingJSONBackend = _optional_backend(
+    "docling.backend.json.docling_json_backend", "DoclingJSONBackend"
+)
+MarkdownDocumentBackend = _optional_backend(
+    "docling.backend.md_backend", "MarkdownDocumentBackend"
+)
+MsExcelDocumentBackend = _optional_backend(
+    "docling.backend.msexcel_backend", "MsExcelDocumentBackend"
+)
+MsPowerpointDocumentBackend = _optional_backend(
+    "docling.backend.mspowerpoint_backend", "MsPowerpointDocumentBackend"
+)
+MsWordDocumentBackend = _optional_backend(
+    "docling.backend.msword_backend", "MsWordDocumentBackend"
+)
+PubMedDocumentBackend = _optional_backend(
+    "docling.backend.xml.pubmed_backend", "PubMedDocumentBackend"
+)
+PatentUsptoDocumentBackend = _optional_backend(
+    "docling.backend.xml.uspto_backend", "PatentUsptoDocumentBackend"
+)
 
 
 class FormatOption(BaseModel):

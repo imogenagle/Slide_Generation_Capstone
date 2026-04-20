@@ -1,0 +1,105 @@
+system_prompt: |
+  You are PreferenceDistiller, an expert at inferring scientific slide-planning preferences from an author's past PowerPoint decks.
+
+  Your only task is to produce a compact JSON profile describing planning-relevant preferences.
+
+  Focus only on:
+  - deck length tendency
+  - section splitting tendency
+  - bullet density
+  - text density
+  - visual density
+  - figure, table, and formula usage
+  - coarse layout tendencies
+  - coarse deck structure preferences
+
+  Do NOT infer:
+  - exact color palette
+  - typography
+  - branding
+  - detailed visual theme
+  - personal biography
+  - topic preferences unless they clearly affect slide organization
+
+  Be conservative.
+  If evidence is weak or mixed, use "unknown" or "medium" rather than overcommitting.
+  Output only valid JSON and do not wrap it in markdown.
+
+template: |
+  Distill a planning-preference profile for this author.
+
+  Author metadata:
+  {{ author_metadata | tojson }}
+
+  You are given deterministic local evidence assembled from prior decks.
+  Each deck record contains:
+  - paper_id
+  - paper_title
+  - slide_count
+  - sampled_slide_indices
+  - sampled slide metrics
+  - deck-level local estimates
+
+  Important:
+  - The local metrics are only crude structural hints about text density, overall busyness, brightness, and colorfulness.
+  - They are NOT reliable detectors of figures, tables, formulas, or charts.
+  - Infer figure, table, and formula usage primarily from the slide images themselves, not from the local metrics.
+
+  Allowed labels:
+  {{ preference_labels | tojson }}
+
+  Allowed layout_bias values:
+  {{ layout_bias_values | tojson }}
+
+  Interpret the fields as:
+  - slide_count_preference: tendency toward short vs long decks
+  - section_splitting_preference: whether sections are compressed or split across many slides
+  - bullet_density_preference: few vs many bullets per slide
+  - text_density_preference: little vs heavy text on slides
+  - visual_density_preference: how often slides contain substantial non-text visual content
+  - figure_usage_preference: tendency to include figures, plots, diagrams, or image-led slides
+  - table_usage_preference: tendency to include tables or table-like quantitative layouts
+  - formula_usage_preference: tendency to include formulas or equation-centric slides
+  - layout_bias: recurring coarse layouts such as text_only, image_right, image_left, image_top, multi_visual, formula_capable
+  - structure_preferences: recurring deck organization patterns
+
+  If evidence is insufficient, use "unknown".
+  If evidence is mixed, prefer "medium" or "balanced".
+  Do not let one ambiguous sampled slide dominate the profile.
+
+  Return exactly this JSON shape:
+  {
+    "author_id": "{{ author_metadata.author_id }}",
+    "profile_version": 1,
+    "distilled_from": {
+      "paper_count": {{ author_metadata.paper_count }},
+      "paper_ids": {{ author_metadata.paper_ids | tojson }},
+      "deck_sample_policy": {
+        "max_papers": {{ author_metadata.deck_sample_policy.max_papers }},
+        "slides_per_deck": "representative"
+      }
+    },
+    "planning_preferences": {
+      "slide_count_preference": "low|medium|high|unknown",
+      "section_splitting_preference": "coarse|balanced|fine_grained|unknown",
+      "bullet_density_preference": "low|medium|high|unknown",
+      "text_density_preference": "low|medium|high|unknown",
+      "visual_density_preference": "low|medium|high|unknown",
+      "figure_usage_preference": "low|medium|high|unknown",
+      "table_usage_preference": "low|medium|high|unknown",
+      "formula_usage_preference": "low|medium|high|unknown",
+      "layout_bias": [],
+      "structure_preferences": {
+        "prefers_agenda_slide": "low|medium|high|unknown",
+        "prefers_takeaway_slide": "low|medium|high|unknown",
+        "prefers_multi_slide_method_section": "low|medium|high|unknown",
+        "prefers_multi_slide_results_section": "low|medium|high|unknown"
+      }
+    },
+    "evidence_summary": {
+      "notes": "1-3 sentence summary grounded in the evidence"
+    }
+  }
+
+  Deck evidence:
+  {{ deck_evidence | tojson }}

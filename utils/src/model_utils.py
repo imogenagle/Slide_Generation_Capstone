@@ -6,12 +6,17 @@ import numpy as np
 import torch
 import torchvision.transforms as T
 from FlagEmbedding import BGEM3FlagModel
-from marker.config.parser import ConfigParser
-from marker.converters.pdf import PdfConverter
-from marker.output import text_from_rendered
 from PIL import Image
 from torchvision.transforms.functional import InterpolationMode
 from transformers import AutoFeatureExtractor, AutoModel
+
+try:
+    from marker.config.parser import ConfigParser
+    from marker.converters.pdf import PdfConverter
+    from marker.output import text_from_rendered
+    _HAS_LEGACY_MARKER_API = True
+except ImportError:
+    _HAS_LEGACY_MARKER_API = False
 
 from utils.src.presentation import Presentation, SlidePage
 from utils.src.utils import is_image_path, pjoin
@@ -113,27 +118,43 @@ def parse_pdf(
     """
     if save_file:
         os.makedirs(output_path, exist_ok=True)
-    config_parser = ConfigParser(
-        {
-            "output_format": "markdown",
-        }
-    )
-    converter = PdfConverter(
-        config=config_parser.generate_config_dict(),
-        artifact_dict=model_lst,
-        processor_list=config_parser.get_processors(),
-        renderer=config_parser.get_renderer(),
-    )
-    rendered = converter(pdf_path)
-    full_text, _, images = text_from_rendered(rendered)
+    if _HAS_LEGACY_MARKER_API:
+        config_parser = ConfigParser(
+            {
+                "output_format": "markdown",
+            }
+        )
+        converter = PdfConverter(
+            config=config_parser.generate_config_dict(),
+            artifact_dict=model_lst,
+            processor_list=config_parser.get_processors(),
+            renderer=config_parser.get_renderer(),
+        )
+        rendered = converter(pdf_path)
+        full_text, _, images = text_from_rendered(rendered)
+        if save_file:
+            with open(pjoin(output_path, "source.md"), "w+", encoding="utf-8") as f:
+                f.write(full_text)
+            for filename, image in images.items():
+                image_filepath = os.path.join(output_path, filename)
+                image.save(image_filepath, "JPEG")
+            with open(pjoin(output_path, "meta.json"), "w+") as f:
+                f.write(json.dumps(rendered.metadata, indent=4))
+
+        if not save_file:
+            return full_text, rendered
+        return full_text
+
+    from marker.convert import convert_single_pdf
+
+    full_text, metadata = convert_single_pdf(pdf_path, model_lst)
+    rendered = {"metadata": metadata}
+
     if save_file:
         with open(pjoin(output_path, "source.md"), "w+", encoding="utf-8") as f:
             f.write(full_text)
-        for filename, image in images.items():
-            image_filepath = os.path.join(output_path, filename)
-            image.save(image_filepath, "JPEG")
         with open(pjoin(output_path, "meta.json"), "w+") as f:
-            f.write(json.dumps(rendered.metadata, indent=4))
+            f.write(json.dumps(metadata, indent=4))
 
     if not save_file:
         return full_text, rendered

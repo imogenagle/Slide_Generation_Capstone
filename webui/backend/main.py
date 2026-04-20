@@ -18,6 +18,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from slidegen_openai_utils import (
+    apply_default_azure_openai_env,
+    azure_display_models,
+)
+
+apply_default_azure_openai_env()
+
 app = FastAPI(title="SlideGen WebUI API")
  
 app.add_middleware(
@@ -66,6 +73,9 @@ def _safe_stem(name: str) -> str:
 
 
 def _get_available_models() -> List[str]:
+    azure_models = azure_display_models()
+    if azure_models:
+        return azure_models
     # 你可以按 SlideGen 支持的别名来列（utils/wei_utils.py 有 4o / 4o-mini / gpt-4.1 / gpt-5 等）
     return ["4o", "4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-5", "o1", "o3"]
 

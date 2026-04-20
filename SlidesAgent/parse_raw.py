@@ -19,8 +19,6 @@ from pathlib import Path
 
 import PIL
 
-from marker.models import create_model_dict
-
 from utils.wei_utils import *
 
 from utils.pptx_utils import *
@@ -32,6 +30,21 @@ import argparse
 
 load_dotenv()
 IMAGE_RESOLUTION_SCALE = 5.0
+
+
+def create_model_dict(*args, **kwargs):
+    # Marker is only used as a fallback when docling parsing is too sparse.
+    # Import it lazily so its environment-sensitive settings do not block
+    # SlideGen startup on machines with different local env defaults.
+    if os.environ.get("DEBUG") == "release":
+        os.environ["DEBUG"] = "false"
+
+    try:
+        from marker.models import create_model_dict as _create_model_dict
+    except Exception:
+        from marker.models import load_all_models as _create_model_dict
+
+    return _create_model_dict(*args, **kwargs)
 
 pipeline_options = PdfPipelineOptions()
 pipeline_options.images_scale = IMAGE_RESOLUTION_SCALE

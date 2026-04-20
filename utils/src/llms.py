@@ -16,6 +16,11 @@ from openai import OpenAI
 from PIL import Image
 from torch import Tensor, cosine_similarity
 
+from slidegen_openai_utils import (
+    azure_openai_enabled,
+    build_openai_client,
+    resolve_direct_model_name,
+)
 from src.model_utils import get_text_embedding
 from src.utils import get_json_from_response, pexists, pjoin, print, tenacity
 
@@ -83,14 +88,23 @@ class LLM:
             use_openai (bool): Whether to use OpenAI.
             use_batch (bool): Whether to use OpenAI's Batch API, which is single thread only.
         """
-        if use_openai and "OPENAI_API_KEY" in os.environ:
-            self.client = OpenAI(base_url=api_base)
+        if use_openai and (
+            "OPENAI_API_KEY" in os.environ or "AZURE_OPENAI_API_KEY" in os.environ
+        ):
+            self.client = build_openai_client(base_url=api_base)
         if use_batch and "OPENAI_API_KEY" in os.environ:
             assert use_openai, "use_batch must be used with use_openai"
             self.oai_batch = Auto(loglevel=0)
-        if "OPENAI_API_KEY" not in os.environ:
+        if (
+            "OPENAI_API_KEY" not in os.environ
+            and "AZURE_OPENAI_API_KEY" not in os.environ
+        ):
             print("Warning: no API key found")
-        self.model = model
+        self.model = (
+            resolve_direct_model_name(model)
+            if use_openai and api_base is None and azure_openai_enabled()
+            else model
+        )
         self.api_base = api_base
         self._use_openai = use_openai
         self._use_batch = use_batch

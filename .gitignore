@@ -274,3 +274,7 @@ raw_result_output.txt
 # macOS
 .DS_Store
 **/.DS_Store
+data_raw/
+v1.0/
+.venv/
+doc2ppt_raw.tar.gz
