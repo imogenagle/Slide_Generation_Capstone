@@ -47,6 +47,29 @@ LAYOUT_BIAS_VALUES = [
     "multi_visual",
     "formula_capable",
 ]
+SECTION_CATEGORY_VALUES = [
+    "opening_context",
+    "agenda_roadmap",
+    "background_context",
+    "motivation",
+    "problem_statement",
+    "prior_work",
+    "approach_overview",
+    "methodology_process",
+    "system_architecture",
+    "implementation_details",
+    "data_inputs",
+    "evaluation_validation",
+    "results_findings",
+    "analysis_discussion",
+    "comparison_benchmark",
+    "case_study_example",
+    "limitations_risks",
+    "recommendations_implications",
+    "conclusion_takeaways",
+    "future_directions",
+    "appendix_qa",
+]
 PREFERENCE_LABELS = ["low", "medium", "high", "coarse", "balanced", "fine_grained", "unknown"]
 SLIDE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -78,6 +101,15 @@ def resolve_repo_path(raw_path_value: str) -> Path:
         if candidate.exists():
             return candidate
     return REPO_ROOT / path
+
+
+def normalize_path_for_compare(path_like: str | Path | None) -> str:
+    if not path_like:
+        return ""
+    try:
+        return str(resolve_repo_path(str(path_like)).resolve())
+    except Exception:
+        return str(Path(path_like)).strip()
 
 
 def numeric_slide_sort_key(path: Path) -> tuple[int, str]:
@@ -242,6 +274,7 @@ def sanitize_profile(raw_profile: dict[str, Any], author_id: str, paper_ids: lis
     planning = raw_profile.get("planning_preferences", {}) or {}
     structure = planning.get("structure_preferences", {}) or {}
     layout_bias = planning.get("layout_bias", []) or []
+    typical_section_categories = planning.get("typical_section_categories", []) or []
 
     allowed_preference_values = {"low", "medium", "high", "unknown"}
     allowed_split_values = {"coarse", "balanced", "fine_grained", "unknown"}
@@ -264,11 +297,17 @@ def sanitize_profile(raw_profile: dict[str, Any], author_id: str, paper_ids: lis
         if value in LAYOUT_BIAS_VALUES and value not in cleaned_layout_bias:
             cleaned_layout_bias.append(value)
 
+    cleaned_section_categories = []
+    for item in typical_section_categories:
+        value = str(item).strip()
+        if value in SECTION_CATEGORY_VALUES and value not in cleaned_section_categories:
+            cleaned_section_categories.append(value)
+
     notes = raw_profile.get("evidence_summary", {}).get("notes", "")
 
     return {
         "author_id": author_id,
-        "profile_version": 1,
+        "profile_version": 2,
         "distilled_from": {
             "paper_count": len(paper_ids),
             "paper_ids": paper_ids,
@@ -287,6 +326,7 @@ def sanitize_profile(raw_profile: dict[str, Any], author_id: str, paper_ids: lis
             "table_usage_preference": pref("table_usage_preference"),
             "formula_usage_preference": pref("formula_usage_preference"),
             "layout_bias": cleaned_layout_bias,
+            "typical_section_categories": cleaned_section_categories,
             "structure_preferences": {
                 "prefers_agenda_slide": structure_pref("prefers_agenda_slide"),
                 "prefers_takeaway_slide": structure_pref("prefers_takeaway_slide"),
@@ -300,7 +340,17 @@ def sanitize_profile(raw_profile: dict[str, Any], author_id: str, paper_ids: lis
     }
 
 
-def select_papers_for_author(author_id: str, paper_author_rows: list[dict[str, str]], paper_rows: list[dict[str, str]], max_papers: int) -> list[dict[str, Any]]:
+def select_papers_for_author(
+    author_id: str,
+    paper_author_rows: list[dict[str, str]],
+    paper_rows: list[dict[str, str]],
+    max_papers: int,
+    *,
+    exclude_paper_ids: set[str] | None = None,
+    exclude_pdf_paths: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    exclude_paper_ids = exclude_paper_ids or set()
+    exclude_pdf_paths = exclude_pdf_paths or set()
     paper_ids_for_author = {
         row["paper_id"]
         for row in paper_author_rows
@@ -310,8 +360,13 @@ def select_papers_for_author(author_id: str, paper_author_rows: list[dict[str, s
     for row in paper_rows:
         if row["paper_id"] not in paper_ids_for_author:
             continue
+        if row["paper_id"] in exclude_paper_ids:
+            continue
         raw_dir = resolve_repo_path(row["raw_dir"])
         if not raw_dir.exists():
+            continue
+        normalized_pdf_path = normalize_path_for_compare(row["paper_pdf_path"])
+        if normalized_pdf_path in exclude_pdf_paths:
             continue
         candidates.append(
             {
@@ -387,6 +442,7 @@ def render_prompt(prompt_path: Path, author_metadata: dict[str, Any], deck_evide
         author_metadata=author_metadata,
         deck_evidence=deck_evidence,
         layout_bias_values=LAYOUT_BIAS_VALUES,
+        section_category_values=SECTION_CATEGORY_VALUES,
         preference_labels=PREFERENCE_LABELS,
     )
     return {
@@ -436,6 +492,76 @@ def call_distiller_model(model_name: str, system_prompt: str, user_prompt: str, 
     return extract_json_object(raw_text)
 
 
+def distill_author_profile(
+    author_id: str,
+    *,
+    authors_csv: Path = DEFAULT_AUTHORS_CSV,
+    paper_authors_csv: Path = DEFAULT_PAPER_AUTHORS_CSV,
+    papers_csv: Path = DEFAULT_PAPERS_CSV,
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
+    prompt_path: Path = DEFAULT_PROMPT_PATH,
+    max_papers: int = 5,
+    model: str = "4o-mini",
+    force_refresh: bool = False,
+    exclude_paper_ids: set[str] | None = None,
+    exclude_pdf_paths: set[str] | None = None,
+) -> dict[str, Any]:
+    """Build or load a distilled author profile for planner personalization."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    profile_path = output_dir / f"{author_id}.json"
+
+    if profile_path.exists() and not force_refresh:
+        return json.loads(profile_path.read_text(encoding="utf-8"))
+
+    load_dotenv(REPO_ROOT / ".env")
+
+    authors_rows = load_csv_rows(authors_csv)
+    paper_author_rows = load_csv_rows(paper_authors_csv)
+    paper_rows = load_csv_rows(papers_csv)
+
+    author_row = next((row for row in authors_rows if row["author_id"].strip() == author_id), None)
+    if author_row is None:
+        raise ValueError(f"Unknown author_id: {author_id}")
+
+    selected_papers = select_papers_for_author(
+        author_id,
+        paper_author_rows,
+        paper_rows,
+        max_papers,
+        exclude_paper_ids=exclude_paper_ids,
+        exclude_pdf_paths=exclude_pdf_paths,
+    )
+    if not selected_papers:
+        raise ValueError(f"No eligible papers with raw decks found for author_id: {author_id}")
+
+    author_metadata = build_author_metadata(author_row, selected_papers, max_papers)
+    deck_evidence = build_deck_evidence(selected_papers)
+    rendered_prompt = render_prompt(prompt_path, author_metadata, deck_evidence)
+
+    input_bundle_path = output_dir / f"{author_id}.input.json"
+    input_bundle = {
+        "author_metadata": author_metadata,
+        "deck_evidence": deck_evidence,
+        "prompt_preview": rendered_prompt["user_prompt"],
+    }
+    input_bundle_path.write_text(json.dumps(input_bundle, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    raw_profile = call_distiller_model(
+        model_name=model,
+        system_prompt=rendered_prompt["system_prompt"],
+        user_prompt=rendered_prompt["user_prompt"],
+        deck_evidence=deck_evidence,
+    )
+    profile = sanitize_profile(
+        raw_profile=raw_profile,
+        author_id=author_id,
+        paper_ids=author_metadata["paper_ids"],
+        max_papers=max_papers,
+    )
+    profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+    return profile
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Distill standalone author planning profiles from prior decks.")
     parser.add_argument("--author-id", required=True, help="Canonical author_id from Capstone/author_tables/authors.csv")
@@ -453,56 +579,48 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    load_dotenv(REPO_ROOT / ".env")
-
-    authors_rows = load_csv_rows(args.authors_csv)
-    paper_author_rows = load_csv_rows(args.paper_authors_csv)
-    paper_rows = load_csv_rows(args.papers_csv)
-
-    author_row = next((row for row in authors_rows if row["author_id"].strip() == args.author_id), None)
-    if author_row is None:
-        raise SystemExit(f"Unknown author_id: {args.author_id}")
-
-    selected_papers = select_papers_for_author(args.author_id, paper_author_rows, paper_rows, args.max_papers)
-    if not selected_papers:
-        raise SystemExit(f"No eligible papers with raw decks found for author_id: {args.author_id}")
-
-    author_metadata = build_author_metadata(author_row, selected_papers, args.max_papers)
-    deck_evidence = build_deck_evidence(selected_papers)
-    rendered_prompt = render_prompt(args.prompt_path, author_metadata, deck_evidence)
-
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    input_bundle_path = output_dir / f"{args.author_id}.input.json"
-    input_bundle = {
-        "author_metadata": author_metadata,
-        "deck_evidence": deck_evidence,
-        "prompt_preview": rendered_prompt["user_prompt"],
-    }
-    input_bundle_path.write_text(json.dumps(input_bundle, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if args.dry_run_metadata_only:
+        load_dotenv(REPO_ROOT / ".env")
+        authors_rows = load_csv_rows(args.authors_csv)
+        paper_author_rows = load_csv_rows(args.paper_authors_csv)
+        paper_rows = load_csv_rows(args.papers_csv)
+        author_row = next((row for row in authors_rows if row["author_id"].strip() == args.author_id), None)
+        if author_row is None:
+            raise SystemExit(f"Unknown author_id: {args.author_id}")
+        selected_papers = select_papers_for_author(args.author_id, paper_author_rows, paper_rows, args.max_papers)
+        if not selected_papers:
+            raise SystemExit(f"No eligible papers with raw decks found for author_id: {args.author_id}")
+        author_metadata = build_author_metadata(author_row, selected_papers, args.max_papers)
+        deck_evidence = build_deck_evidence(selected_papers)
+        rendered_prompt = render_prompt(args.prompt_path, author_metadata, deck_evidence)
+        input_bundle_path = output_dir / f"{args.author_id}.input.json"
+        input_bundle = {
+            "author_metadata": author_metadata,
+            "deck_evidence": deck_evidence,
+            "prompt_preview": rendered_prompt["user_prompt"],
+        }
+        input_bundle_path.write_text(json.dumps(input_bundle, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Saved assembled evidence bundle to {input_bundle_path}")
         print(f"Selected papers: {', '.join(author_metadata['paper_ids'])}")
         return
 
-    raw_profile = call_distiller_model(
-        model_name=args.model,
-        system_prompt=rendered_prompt["system_prompt"],
-        user_prompt=rendered_prompt["user_prompt"],
-        deck_evidence=deck_evidence,
-    )
-    profile = sanitize_profile(
-        raw_profile=raw_profile,
-        author_id=args.author_id,
-        paper_ids=author_metadata["paper_ids"],
+    profile = distill_author_profile(
+        args.author_id,
+        authors_csv=args.authors_csv,
+        paper_authors_csv=args.paper_authors_csv,
+        papers_csv=args.papers_csv,
+        output_dir=args.output_dir,
+        prompt_path=args.prompt_path,
         max_papers=args.max_papers,
+        model=args.model,
     )
     profile_path = output_dir / f"{args.author_id}.json"
-    profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    print(f"Saved assembled evidence bundle to {input_bundle_path}")
+    input_bundle_path = output_dir / f"{args.author_id}.input.json"
     print(f"Saved author profile to {profile_path}")
+    print(f"Saved assembled evidence bundle to {input_bundle_path}")
 
 
 if __name__ == "__main__":

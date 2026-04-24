@@ -12,7 +12,7 @@ from docling_core.types.doc import TextItem
 from camel.models import ModelFactory
 from camel.agents import ChatAgent
 from camel.messages import BaseMessage
-from openai import OpenAI
+from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 from utils.pptx_utils import *
 from utils.wei_utils import * 
 import time
@@ -300,7 +300,7 @@ def filter_image_table(args, filter_config):
     use_gpt5_responses = False
 
     if "gpt-5" in args.model_name_t.lower():  
-        client = OpenAI()  
+        client = build_openai_client()
         use_gpt5_responses = True
     else: 
         if "qwen" in str(args.model_name_t).lower():
@@ -333,16 +333,13 @@ def filter_image_table(args, filter_config):
     user_prompt = filter_prompt.render(**filter_jinja_args)
      
     if use_gpt5_responses:
-         
-        response = client.responses.create(
-            model=args.model_name_v,               
-            input=user_prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"}, 
+        raw_text, input_token, output_token = openai_chat_text(
+            client=client,
+            model=resolve_direct_model_name(args.model_name_v),
+            user_prompt=user_prompt,
+            system_prompt=filter_actor_sys_msg,
+            prefer_responses=True,
         )
-        raw_text = extract_text_from_responses(response)
-        input_token = getattr(getattr(response, "usage", None), "input_tokens", None)
-        output_token = getattr(getattr(response, "usage", None), "output_tokens", None)
     else:
         if "qwen" in str(args.model_name_t).lower():
             response = chat_via_vllm(user_prompt,filter_config,filter_model,filter_actor_sys_msg)
@@ -383,7 +380,7 @@ def fix_image_captions(args, raw_result, actor_config, filtered_image_informatio
     use_gpt5_responses = False
 
     if "gpt-5" in args.model_name_t.lower():  
-        client = OpenAI()  
+        client = build_openai_client()
         use_gpt5_responses = True
     else:
     
@@ -428,18 +425,13 @@ def fix_image_captions(args, raw_result, actor_config, filtered_image_informatio
         )
         
         if use_gpt5_responses:
-            
-            response = client.responses.create(
-                model=args.model_name_v,               
-                input=prompt,
-                reasoning={"effort": "minimal"},
-                text={"verbosity": "low"}, 
+            new_caption, in_tok, out_tok = openai_chat_text(
+                client=client,
+                model=resolve_direct_model_name(args.model_name_v),
+                user_prompt=prompt,
+                system_prompt=fixer_config['system_prompt'],
+                prefer_responses=True,
             )
-            new_caption = extract_text_from_responses(response) 
-            
-            u = getattr(response, "usage", None) or {}
-            in_tok  = getattr(u, "input_tokens",  getattr(u, "input_token_count", 0)) or 0
-            out_tok = getattr(u, "output_tokens", getattr(u, "output_token_count", 0)) or 0
         else:
             fixer_agent.reset()
             response = fixer_agent.step(prompt)
@@ -450,6 +442,57 @@ def fix_image_captions(args, raw_result, actor_config, filtered_image_informatio
         meta['caption'] = new_caption
 
     return filtered_image_information, total_in, total_out
+
+
+def _dedupe_visuals_in_subsection(subsection):
+    for prefix in ("image", "table"):
+        seen = set()
+        for key in list(subsection.keys()):
+            if not str(key).lower().startswith(prefix):
+                continue
+            visual_id = str(subsection[key])
+            if visual_id in seen:
+                del subsection[key]
+                continue
+            seen.add(visual_id)
+
+
+def _dedupe_visuals_globally_in_subsection(subsection, seen_images, seen_tables):
+    for prefix, seen in (("image", seen_images), ("table", seen_tables)):
+        for key in list(subsection.keys()):
+            if not str(key).lower().startswith(prefix):
+                continue
+            visual_id = str(subsection[key])
+            if visual_id in seen:
+                del subsection[key]
+                continue
+            seen.add(visual_id)
+
+
+def dedupe_figure_arrangement(figure_arrangement):
+    """Remove repeated image/table IDs within and across sections/subsections."""
+    if isinstance(figure_arrangement, dict) and isinstance(figure_arrangement.get("sections"), list):
+        sections = figure_arrangement["sections"]
+    elif isinstance(figure_arrangement, dict):
+        sections = figure_arrangement.values()
+    elif isinstance(figure_arrangement, list):
+        sections = figure_arrangement
+    else:
+        return figure_arrangement
+
+    seen_images = set()
+    seen_tables = set()
+
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        _dedupe_visuals_in_subsection(section)
+        _dedupe_visuals_globally_in_subsection(section, seen_images, seen_tables)
+        for subsection in section.get("subsections", []):
+            if isinstance(subsection, dict):
+                _dedupe_visuals_in_subsection(subsection)
+                _dedupe_visuals_globally_in_subsection(subsection, seen_images, seen_tables)
+    return figure_arrangement
  
 
 def gen_figure_match(args, actor_config, raw_result):
@@ -465,6 +508,17 @@ def gen_figure_match(args, actor_config, raw_result):
     json.dump(filtered_image_information, open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/images_filtered.json', 'w'), indent=4)
 
     total_input_token, total_output_token = fix_in, fix_out
+
+    # If filtering removed every visual asset, skip the figure-matching agent.
+    # Downstream planning can still generate text-only slides from the outline.
+    if not filtered_image_information and not filtered_table_information:
+        figure_arrangement = {}
+        figures_save_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_figures.json"
+        os.makedirs(os.path.dirname(figures_save_path), exist_ok=True)
+        with open(figures_save_path, "w") as f:
+            json.dump(figure_arrangement, f, indent=4)
+        print("[figure-match] No filtered images or tables remained; saving empty figure arrangement.")
+        return total_input_token, total_output_token, 0.0, figure_arrangement
 
     filtered_table_information_captions = {}
     filtered_image_information_captions = {}
@@ -491,11 +545,12 @@ def gen_figure_match(args, actor_config, raw_result):
         'json_content': doc_json,
         'table_information': filtered_table_information_captions,
         'image_information': filtered_image_information_captions,
+        'outline_mode': getattr(args, "outline_mode", "high_level"),
     }
 
     use_gpt5_responses = False
     if "gpt-5" in args.model_name_t.lower():  
-        client = OpenAI()  
+        client = build_openai_client()
         use_gpt5_responses = True
     else:
         if "qwen" in str(args.model_name_t).lower():
@@ -524,17 +579,13 @@ def gen_figure_match(args, actor_config, raw_result):
     # print(planner_prompt)
 
     if use_gpt5_responses:
-        response = client.responses.create(
-            model=args.model_name_v,               
-            input=planner_prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"}, 
+        res_result, input_token, output_token = openai_chat_text(
+            client=client,
+            model=resolve_direct_model_name(args.model_name_v),
+            user_prompt=planner_prompt,
+            system_prompt=planner_config['system_prompt'],
+            prefer_responses=True,
         )
-        res_result = extract_text_from_responses(response)
-        
-        u = getattr(response, "usage", None) or {}
-        input_token  = getattr(u, "input_tokens",  getattr(u, "input_token_count", None))
-        output_token = getattr(u, "output_tokens", getattr(u, "output_token_count", None)) 
     else:
         if "qwen" in str(args.model_name_t).lower():
             response = chat_via_vllm(planner_prompt,actor_config,planner_model,planner_config['system_prompt'])
@@ -556,6 +607,7 @@ def gen_figure_match(args, actor_config, raw_result):
     time_taken = end_time - start_time
     print("time_taken:",time_taken)
     figure_arrangement = get_json_from_response(res_result)
+    figure_arrangement = dedupe_figure_arrangement(figure_arrangement)
     figures_save_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_figures.json" 
     os.makedirs(os.path.dirname(figures_save_path), exist_ok=True)
     with open(figures_save_path, "w") as f:

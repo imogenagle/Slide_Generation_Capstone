@@ -16,6 +16,7 @@ from camel.messages import BaseMessage
 import time
 from utils.pptx_utils import *
 from utils.wei_utils import *
+from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 
 import pickle as pkl
 import argparse
@@ -75,7 +76,7 @@ def gen_formula_match_v1(args, actor_config, raw_result):
 
     use_gpt5_responses = False
     if "gpt-5" in args.model_name_t.lower():  
-        client = OpenAI()  
+        client = build_openai_client()
         use_gpt5_responses = True
     else:
          
@@ -103,16 +104,13 @@ def gen_formula_match_v1(args, actor_config, raw_result):
     planner_prompt = formula_template.render(**planner_jinja_args)
 
     if use_gpt5_responses:
-        response = client.responses.create(
-            model=args.model_name_v,               
-            input=planner_prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"}, 
+        res_result, input_token, output_token = openai_chat_text(
+            client=client,
+            model=resolve_direct_model_name(args.model_name_v),
+            user_prompt=planner_prompt,
+            system_prompt=planner_config['system_prompt'],
+            prefer_responses=True,
         )
-        res_result = extract_text_from_responses(response)
-        u = getattr(response, "usage", None) or {}
-        input_token  = getattr(u, "input_tokens",  getattr(u, "input_token_count", None))
-        output_token = getattr(u, "output_tokens", getattr(u, "output_token_count", None)) 
     elif "qwen" in str(args.model_name_t).lower():
         response = chat_via_vllm(planner_prompt,actor_config,planner_model,planner_config['system_prompt'])
         res_result = response.choices[0].message.content 
@@ -255,6 +253,4 @@ def build_formula_json(
         json.dump(results, f, ensure_ascii=False, indent=4)
     print("results",results)
     return results,total_in,total_out,time_taken
-
-
 

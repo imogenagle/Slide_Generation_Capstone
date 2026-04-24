@@ -8,11 +8,15 @@ from jinja2 import Environment, StrictUndefined
 from utils.src.utils import   get_json_from_response
 from utils.wei_utils import *
 from utils.pptx_utils import extract_text_from_responses
-from openai import OpenAI       
+from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 from camel.models import ModelFactory          
 from camel.agents import ChatAgent     
 from pptx.util import Cm, Pt
 import time
+
+
+def plan_variant_suffix(args) -> str:
+    return "_personalized" if getattr(args, "use_author_preferences", False) else "_baseline"
  
 def generate_slide_plan(
     args 
@@ -32,13 +36,19 @@ def generate_slide_plan(
     formulas_json = json.loads(Path(formulas_path).read_text(encoding="utf-8"))
     images = json.loads(Path(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/images_filtered.json').read_text(encoding="utf-8"))
     tables = json.loads(Path(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/tables_filtered.json' ).read_text(encoding="utf-8"))
+    author_preference_profile = None
+    if getattr(args, "use_author_preferences", False):
+        profile_path = Path(getattr(args, "author_profile_path", ""))
+        if not profile_path.exists():
+            raise FileNotFoundError(f"Author preference profile not found: {profile_path}")
+        author_preference_profile = json.loads(profile_path.read_text(encoding="utf-8"))
     with open(f'utils/prompt_templates/layout_agent_xin.yaml', "r", encoding="utf-8") as f:
         prompt_cfg =  yaml.safe_load(f) 
     start_time = time.time()
     use_gpt5_responses = False
     cfg = get_agent_config(args.model_name_v)
     if "gpt-5" in args.model_name_t.lower():  
-        client = OpenAI()  
+        client = build_openai_client()
         use_gpt5_responses = True
     else:
         if args.model_name_t.startswith('vllm_qwen'):
@@ -68,23 +78,23 @@ def generate_slide_plan(
         'figures_json': figures_json,
         'formulas_json': formulas_json,
         'image_informations_json' : images,
-        'table_informations_json' : tables
+        'table_informations_json' : tables,
+        'use_author_preferences': getattr(args, "use_author_preferences", False),
+        'author_preference_profile_json': author_preference_profile,
     } 
     template =  jinja_env.from_string(prompt_cfg["template"]) 
     planner_prompt = template.render(**jinja_args)
     
      
     if use_gpt5_responses:
-        response = client.responses.create(
-            model=args.model_name_v,               
-            input=planner_prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"},    
+        raw_text, in_tok, out_tok = openai_chat_text(
+            client=client,
+            model=resolve_direct_model_name(args.model_name_v),
+            user_prompt=planner_prompt,
+            system_prompt=prompt_cfg['system_prompt'],
+            prefer_responses=True,
         )
-        raw_text = extract_text_from_responses(response)
         print("slide plan:",raw_text)
-        in_tok = getattr(getattr(response, "usage", None), "input_tokens", None)
-        out_tok = getattr(getattr(response, "usage", None), "output_tokens", None)
     elif args.model_name_t.startswith('vllm_qwen'):
         print("planner_prompt",planner_prompt)
         print("prompt_cfg['system_prompt']",prompt_cfg['system_prompt'])
@@ -104,7 +114,10 @@ def generate_slide_plan(
     time_taken = end_time - start_time
     print("time_taken:",time_taken)
     slide_plan = get_json_from_response(raw_text)
-    slide_plan_path = f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_slide_plan.json'
+    slide_plan_path = (
+        f'contents/{args.paper_name}/'
+        f'<{args.model_name_t}_{args.model_name_v}>_slide_plan{plan_variant_suffix(args)}.json'
+    )
     with open(slide_plan_path, 'w') as f:
         json.dump(slide_plan, f, indent=4)
     print("slide_plan")

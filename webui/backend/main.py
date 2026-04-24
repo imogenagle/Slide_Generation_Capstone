@@ -26,6 +26,13 @@ from slidegen_openai_utils import (
 apply_default_azure_openai_env()
 
 app = FastAPI(title="SlideGen WebUI API")
+
+
+def append_outline_mode_suffix(paper_name: str, outline_mode: str) -> str:
+    base = paper_name.strip().replace(" ", "_")
+    if base.endswith("_high_level") or base.endswith("_technical"):
+        return base
+    return f"{base}_{outline_mode}"
  
 app.add_middleware(
     CORSMiddleware,
@@ -87,6 +94,7 @@ def _run_slide_generation(
     model_name_t: str,
     model_name_v: str,
     formula_mode: int,
+    outline_mode: str,
     no_blank_detection: bool,
 ) -> None:
     try:
@@ -100,8 +108,9 @@ def _run_slide_generation(
 
         stem = _safe_stem(original_filename)
         paper_name = f"{stem}_{job_id[:8]}"  # 隔离输出，避免并发冲突
+        output_paper_name = append_outline_mode_suffix(paper_name, outline_mode)
 
-        _add_log(job_id, f"[job] paper_name={paper_name}")
+        _add_log(job_id, f"[job] paper_name={output_paper_name}")
         _set_job(job_id, progress=8, message="Launching SlideGen pipeline...")
 
         # 关键：API key 不要在前端传；放在后端环境变量
@@ -127,6 +136,7 @@ def _run_slide_generation(
             "--model_name_v", model_name_v,
             "--tmp_dir", str(job_dir / "tmp"),
             "--formula_mode", str(formula_mode),
+            "--outline_mode", outline_mode,
         ]
         if no_blank_detection:
             cmd.append("--no_blank_detection")
@@ -169,7 +179,7 @@ def _run_slide_generation(
 
         _set_job(job_id, progress=92, message="Collecting outputs...")
 
-        pptx_path = PROJECT_ROOT / "contents" / paper_name / f"{model_name_t}_{model_name_v}_output_slides_themed.pptx"
+        pptx_path = PROJECT_ROOT / "contents" / output_paper_name / f"{model_name_t}_{model_name_v}_output_slides_themed.pptx"
         if not pptx_path.exists():
             raise FileNotFoundError(f"Expected output pptx not found: {pptx_path}")
 
@@ -179,7 +189,7 @@ def _run_slide_generation(
             progress=100,
             message="Completed",
             output_file=str(pptx_path),
-            paper_name=paper_name,
+            paper_name=output_paper_name,
         )
         _add_log(job_id, f"[done] pptx={pptx_path}")
 
@@ -204,12 +214,15 @@ async def generate_slides(
     model_name_t: str = Form("4o"),
     model_name_v: str = Form("4o"),
     formula_mode: int = Form(1),
+    outline_mode: str = Form("high_level"),
     no_blank_detection: bool = Form(False),
     pdf_file: UploadFile = File(...),
 ):
     models = _get_available_models()
     if model_name_t not in models or model_name_v not in models:
         raise HTTPException(status_code=400, detail="Unknown model name")
+    if outline_mode not in {"high_level", "technical"}:
+        raise HTTPException(status_code=400, detail="Unknown outline mode")
 
     job_id = uuid.uuid4().hex
     _set_job(job_id, status="pending", progress=0, message="Queued...")
@@ -227,6 +240,7 @@ async def generate_slides(
         model_name_t,
         model_name_v,
         int(formula_mode),
+        outline_mode,
         bool(no_blank_detection),
     )
 

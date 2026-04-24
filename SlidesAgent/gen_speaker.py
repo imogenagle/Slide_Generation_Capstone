@@ -12,7 +12,7 @@ from docling_core.types.doc import TextItem
 from camel.models import ModelFactory
 from camel.agents import ChatAgent
 from camel.messages import BaseMessage
-from openai import OpenAI
+from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 from utils.pptx_utils import *
 from utils.wei_utils import * 
 import time
@@ -43,7 +43,7 @@ def gen_speaker_script(args, actor_config, raw_result):
  
     use_gpt5_responses = False
     if "gpt-5" in args.model_name_t.lower():  
-        client = OpenAI()  
+        client = build_openai_client()
         use_gpt5_responses = True
     else:
         if "qwen" in str(args.model_name_t).lower():
@@ -68,17 +68,13 @@ def gen_speaker_script(args, actor_config, raw_result):
     planner_prompt = script_template.render(**planner_jinja_args)
 
     if use_gpt5_responses: 
-        response = client.responses.create(
-            model=args.model_name_v,               
-            input=planner_prompt,
-            reasoning={"effort": "minimal"},
-            text={"verbosity": "low"}, 
+        res_result, input_token, output_token = openai_chat_text(
+            client=client,
+            model=resolve_direct_model_name(args.model_name_v),
+            user_prompt=planner_prompt,
+            system_prompt=planner_config['system_prompt'],
+            prefer_responses=True,
         )
-        res_result = extract_text_from_responses(response)
-         
-        u = getattr(response, "usage", None) or {}
-        input_token  = getattr(u, "input_tokens",  getattr(u, "input_token_count", None))
-        output_token = getattr(u, "output_tokens", getattr(u, "output_token_count", None)) 
     else:
         if "qwen" in str(args.model_name_t).lower():
             response = chat_via_vllm(planner_prompt,actor_config,planner_model,planner_config['system_prompt'])

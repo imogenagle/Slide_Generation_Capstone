@@ -3,18 +3,21 @@ system_prompt: |
   Your ONLY task: return a single valid JSON object matching EXACTLY the schema below.
   Do NOT include explanations, summaries, markdown code fences, or natural language.
   
-  The PowerPoint canvas is **fixed at 13.3 in * 7.5 in** (16:9). You receive five JSON blobs:
+  The PowerPoint canvas is **fixed at 13.3 in * 7.5 in** (16:9). You receive five required JSON blobs and one optional personalization blob:
   1. **raw_result.json** - hierarchical summary of the paper.  Structure:
   2. **figures.json** - list of sections → subsections → visual assets.  Example (keys may vary by paper):
     *Each `imageN` or `tableN` value is an index that maps to an image/table file name (`image_2.png`, `table_1.png`, etc.).*
   3. **formula_index.json** - flat list of formula images:
   4. **image_dims.json**  - pixel dimensions for every `image_*.png` 
   5. **table_dims.json**  - pixel dimensions for every `table_*.png` 
+  6. **author_preference_profile.json** - optional distilled planning preferences from prior user history
 
   Instructions:
   ---
   
   ## What you must do for **every subsection**
+  Preserve overview and summary subsections from `raw_result.json`. In technical decks, overview/summary slides are intentional anchors for the added technical detail; do not drop or flatten them just because more detailed subsections are also present.
+
   1. **Pick the best slide template** from this library and output its `template_id`:
 
     | ID | When to use |
@@ -39,14 +42,26 @@ system_prompt: |
     | T18_2formula_TopTextBottom | Top 2 rows: two formulas; bottom: text block. |
     if any formula exists, you must use a formula-capable template (T14/T15/T16/T17/T18). Do not use T2/T3/T4 when formula≥1.”
     **If a subsection contains any formula, you must choose a formula-capable template—T14/T15 (1 image/table + 1 formula), T16 (1 image/table + 2 formulas), T17 (2 images/tables + 1 formula), or T18 (2 formulas)—and count formulas as picture slots so capacity ≥ (images + tables + formulas). The only exception is a single formula with no other visuals: treat it as a single visual—use T4_ImageTop if wide (aspect ≥ 1.6), otherwise alternate T2_ImageRight/T3_ImageLeft.**
+    **If a subsection has zero visuals (`images + tables + formulas == 0`), you MUST choose `T1_TextOnly`. Never choose a template with picture placeholders unless the selected visuals fill every required picture slot.**
   2. **Generate hierarchical bullets** summarising the subsection:  
      • Up to **6 top-level bullets**.  
      • Each top bullet may have **0-6 sub-bullets** (2-level outline).  
      • Top bullets ≤ 20 words; sub-bullets ≤ 25 words.
+     • Top bullets and sub-bullets must state the actual substantive claims, findings, mechanisms, limitations, or future-work items.
+     • Do not write meta-descriptions at any bullet level, including nested `sub` bullets. Avoid phrases such as “proposes future research directions,” “describes the method,” “discusses limitations,” “presents results,” “highlights contributions,” or “highlights integration.”
+     • If the raw content says a section proposes, discusses, describes, presents, or highlights something, convert that into the thing itself.
+       Example: write “Extend HIOC to non-motion action-state sequences” instead of “Proposes future research directions.”
+       Example: write “Environmental features and uncertainty handling are integrated in HIOC” instead of “Highlights integration of environmental features and uncertainty handling.”
 
   3. **Select visuals** that best support the bullets:  
      • **Formulas** belonging to the same subsection should stay **on the same slide whenever possible**; if more than 2, prefer `T11_3Img_TopTextBottom`.  
      • **Do not crop or distort images** - preserve original aspect ratio (minor scaling to fit is fine).
+
+  4. **If an author preference profile is provided, treat it as a soft planning bias rather than a hard rule.**
+     • Use it to break ties when multiple slide plans are reasonable.
+     • Let it influence slide density, bullet density, visual usage, and template preference only when it does not conflict with the paper content or template constraints.
+     • Never invent slides, visuals, or structure solely because the profile suggests them.
+     • Ignore any preference that is irrelevant to the current subsection or unsupported by the current paper evidence.
 
 
 template: |
@@ -76,6 +91,8 @@ template: |
      ```
 
   *Use the template-selection rules strictly so that downstream code can rely on them.*  
+  *If `images`, `tables`, and `formulas` are all empty for a slide, its `template_id` must be `T1_TextOnly`.*
+  *Bullets must be direct content summaries, not descriptions of what the paper/section does.*
   Answer **only** with the JSON.
 
 
@@ -106,6 +123,13 @@ template: |
   {{ image_informations_json }}
   table_informations:
   {{ table_informations_json }}
+  {% if use_author_preferences %}
+  author_preference_profile:
+  {{ author_preference_profile_json }}
+  {% else %}
+  author_preference_profile:
+  null
+  {% endif %}
 
   
 jinja_args:

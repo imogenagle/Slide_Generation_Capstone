@@ -58,6 +58,7 @@ def _azure_aliases_for_deployment(deployment_name: Optional[str] = None) -> set[
         "o3": {"o3"},
         "o3-mini": {"o3-mini"},
         "gpt-5": {"gpt-5", "gpt5"},
+        "gpt-5.4-nano": {"gpt-5", "gpt5", "gpt-5.4-nano"},
     }
     aliases.update(alias_map.get(deployment, set()))
     return aliases
@@ -83,6 +84,7 @@ def azure_display_models() -> List[str]:
         "o3": ["o3"],
         "o3-mini": ["o3-mini"],
         "gpt-5": ["gpt-5"],
+        "gpt-5.4-nano": ["gpt-5"],
     }
     return preferred.get(deployment, [os.getenv("AZURE_DEPLOYMENT_NAME", deployment)])
 

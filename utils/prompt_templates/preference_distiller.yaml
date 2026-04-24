@@ -1,5 +1,5 @@
 system_prompt: |
-  You are PreferenceDistiller, an expert at inferring scientific slide-planning preferences from an author's past PowerPoint decks.
+  You are PreferenceDistiller, an expert at inferring presentation-planning preferences from an author's past PowerPoint decks across a wide variety of presentation types.
 
   Your only task is to produce a compact JSON profile describing planning-relevant preferences.
 
@@ -11,6 +11,7 @@ system_prompt: |
   - visual density
   - figure, table, and formula usage
   - coarse layout tendencies
+  - recurring section-category tendencies
   - coarse deck structure preferences
 
   Do NOT infer:
@@ -51,6 +52,9 @@ template: |
   Allowed layout_bias values:
   {{ layout_bias_values | tojson }}
 
+  Allowed typical_section_categories values:
+  {{ section_category_values | tojson }}
+
   Interpret the fields as:
   - slide_count_preference: tendency toward short vs long decks
   - section_splitting_preference: whether sections are compressed or split across many slides
@@ -61,7 +65,15 @@ template: |
   - table_usage_preference: tendency to include tables or table-like quantitative layouts
   - formula_usage_preference: tendency to include formulas or equation-centric slides
   - layout_bias: recurring coarse layouts such as text_only, image_right, image_left, image_top, multi_visual, formula_capable
+  - typical_section_categories: recurring, presentation-agnostic section kinds that this author often includes or emphasizes across decks. Use only the normalized labels above, ordered from most characteristic to least characteristic. Prefer broad categories like opening_context, prior_work, methodology_process, results_findings, conclusion_takeaways, case_study_example, recommendations_implications, etc.
   - structure_preferences: recurring deck organization patterns
+
+  Important guidance for typical_section_categories:
+  - Infer section categories from slide titles, deck organization, and visible presentation flow, not from the paper topic itself.
+  - Use broad, reusable presentation categories rather than domain-specific topics.
+  - Include only categories that seem recurrent across the sampled decks.
+  - Do not force scientific-paper conventions if the evidence suggests a different presentation style.
+  - If evidence is weak, return an empty list rather than guessing.
 
   If evidence is insufficient, use "unknown".
   If evidence is mixed, prefer "medium" or "balanced".
@@ -70,7 +82,7 @@ template: |
   Return exactly this JSON shape:
   {
     "author_id": "{{ author_metadata.author_id }}",
-    "profile_version": 1,
+    "profile_version": 2,
     "distilled_from": {
       "paper_count": {{ author_metadata.paper_count }},
       "paper_ids": {{ author_metadata.paper_ids | tojson }},
@@ -89,6 +101,7 @@ template: |
       "table_usage_preference": "low|medium|high|unknown",
       "formula_usage_preference": "low|medium|high|unknown",
       "layout_bias": [],
+      "typical_section_categories": [],
       "structure_preferences": {
         "prefers_agenda_slide": "low|medium|high|unknown",
         "prefers_takeaway_slide": "low|medium|high|unknown",

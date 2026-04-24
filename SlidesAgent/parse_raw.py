@@ -9,7 +9,7 @@ from camel.agents import ChatAgent
 from tenacity import retry, stop_after_attempt
 from docling_core.types.doc import ImageRefMode, PictureItem, TableItem 
  
-from openai import OpenAI
+from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -393,69 +393,60 @@ def parse_raw(args, actor_config, version=1):
         template = Template(open("utils/prompts/gen_poster_raw_content.txt").read())
     elif version == 2:
         template = Template(open("utils/prompts/gen_slides_raw_content_v2.txt").read())
+    author_preference_profile = None
+    if getattr(args, "use_author_preferences", False):
+        profile_path = getattr(args, "author_profile_path", None)
+        if profile_path and Path(profile_path).exists():
+            author_preference_profile = json.loads(Path(profile_path).read_text(encoding="utf-8"))
     use_gpt5_responses = False
 
     actor_sys_msg = 'You are the author of the paper, and you will create an academic presentation (slides) to explain the paper'
  
     if "gpt-5" in args.model_name_t.lower():  
-        client = OpenAI()  
+        client = build_openai_client()
         use_gpt5_responses = True
     
-    if "qwen" in str(args.model_name_t).lower():
-        print("model_type=actor_config['model_type']: ", actor_config['model_type'])
-        actor_model = ModelFactory.create(
-            model_platform=actor_config['model_platform'],
-            model_type=actor_config['model_type'],
-            model_config_dict=actor_config['model_config'],
-            url=actor_config['url'],
-        ) 
-    else:
-        actor_model = ModelFactory.create(
-            model_platform=actor_config['model_platform'],
-            model_type=actor_config['model_type'],
-            model_config_dict=actor_config['model_config'],
-        )
+    actor_model = None
+    actor_agent = None
+    if not use_gpt5_responses:
+        if "qwen" in str(args.model_name_t).lower():
+            print("model_type=actor_config['model_type']: ", actor_config['model_type'])
+            actor_model = ModelFactory.create(
+                model_platform=actor_config['model_platform'],
+                model_type=actor_config['model_type'],
+                model_config_dict=actor_config['model_config'],
+                url=actor_config['url'],
+            ) 
+        else:
+            actor_model = ModelFactory.create(
+                model_platform=actor_config['model_platform'],
+                model_type=actor_config['model_type'],
+                model_config_dict=actor_config['model_config'],
+            )
 
-    actor_agent = ChatAgent(
-        system_message=actor_sys_msg,
-        model=actor_model,
-        message_window_size=10,
-        token_limit=actor_config.get('token_limit', None)
-    )
+        actor_agent = ChatAgent(
+            system_message=actor_sys_msg,
+            model=actor_model,
+            message_window_size=10,
+            token_limit=actor_config.get('token_limit', None)
+        )
 
     while True:
+        outline_mode = getattr(args, "outline_mode", "high_level")
         prompt = template.render(
-            markdown_document=text_content, 
+            markdown_document=text_content,
+            outline_mode=outline_mode,
+            use_author_preferences=getattr(args, "use_author_preferences", False),
+            author_preference_profile_json=author_preference_profile,
         )
         if use_gpt5_responses: 
-            # response = client.responses.create(
-            #     model=args.model_name_t,
-            #     input=prompt,
-            #     reasoning={"effort": "minimal"},   
-            #     text={"verbosity": "low"},         
-            # )
-            # raw_output = extract_text_from_responses(response)
-            # u = getattr(response, "usage", None) or {}
-            # input_token  = getattr(u, "input_tokens",  getattr(u, "input_token_count", None))
-            # output_token = getattr(u, "output_tokens", getattr(u, "output_token_count", None)) 
-            # print("input_token: ",input_token)
-            
-            
-            # Use a gateway-compatible helper:
-            # try /v1/responses first, then fall back to /v1/chat/completions.
-            # raw_output, input_token, output_token = openai_chat_text(
-            #     client=client,
-            #     model=args.model_name_t,
-            #     user_prompt=prompt,
-            #     system_prompt=actor_sys_msg,
-            #     prefer_responses=True,
-            # )
-            # print("input_token: ", input_token)
-            # print("change success")
-            actor_agent.reset()
-            response = actor_agent.step(prompt)
-            input_token, output_token = account_token(response)
-            raw_output = response.msgs[0].content
+            raw_output, input_token, output_token = openai_chat_text(
+                client=client,
+                model=resolve_direct_model_name(args.model_name_t),
+                user_prompt=prompt,
+                system_prompt=actor_sys_msg,
+                prefer_responses=True,
+            )
             print("gpt can run")
             
         else:
@@ -647,23 +638,48 @@ def gen_image_and_table(args, conv_res):
 
     return input_token, output_token, images, tables
 
+def append_outline_mode_suffix(paper_name: str, outline_mode: str) -> str:
+    base = paper_name.strip().replace(" ", "_")
+    if base.endswith("_high_level") or base.endswith("_technical"):
+        return base
+    return f"{base}_{outline_mode}"
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--paper_name', type=str, default=None)
-    parser.add_argument('--model_name', type=str, default='4o')
+    parser.add_argument('--model_name', type=str, default=None)
+    parser.add_argument('--model_name_t', type=str, default=None)
+    parser.add_argument('--model_name_v', type=str, default=None)
     parser.add_argument('--paper_path', type=str, required=True)
     parser.add_argument('--index', type=int, default=0)
+    parser.add_argument('--version', type=int, choices=[1, 2], default=2)
+    parser.add_argument('--outline_only', action='store_true')
+    parser.add_argument(
+        '--outline_mode',
+        choices=['high_level', 'technical'],
+        default='high_level',
+        help='Use high_level for a compact presentation narrative, or technical to preserve major paper subsections.',
+    )
     args = parser.parse_args()
 
-    agent_config = get_agent_config(args.model_name)
+    if args.model_name_t is None:
+        args.model_name_t = args.model_name or '4o'
+    if args.model_name_v is None:
+        args.model_name_v = args.model_name_t
+
+    agent_config = get_agent_config(args.model_name_t)
 
     if args.paper_name is None:
-        args.paper_name = args.paper_path.split('/')[-1].replace('.pdf', '').replace(' ', '_')
+        paper_name = args.paper_path.split('/')[-1].replace('.pdf', '').replace(' ', '_')
+        args.paper_name = append_outline_mode_suffix(paper_name, args.outline_mode)
+    else:
+        args.paper_name = append_outline_mode_suffix(args.paper_name, args.outline_mode)
 
     # Parse raw content
-    input_token, output_token = parse_raw(args, agent_config)
+    input_token, output_token, _, raw_result = parse_raw(args, agent_config, version=args.version)
 
-    # Generate images and tables
-    _, _ = gen_image_and_table(args)
+    if not args.outline_only:
+        # Generate images and tables
+        _, _, _, _ = gen_image_and_table(args, raw_result)
 
     print(f'Token consumption: {input_token} -> {output_token}')

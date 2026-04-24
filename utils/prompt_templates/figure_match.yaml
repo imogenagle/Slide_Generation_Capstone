@@ -13,10 +13,11 @@ system_prompt: |
     • Keys inside a subsection must follow:
         - image1, image2, …  with matching reason / reason1, …  
         - table1, table2, …  with matching reasonT1, reasonT2, …  
-    • The same image or table **may** appear in multiple subsections.  
+    • The same image or table should normally appear in only one subsection.  
+    • The same image or table must never appear more than once in the same subsection.
     • Ensure that image IDs 1 to 5 are each assigned to at least one subsection if a
       reasonable conceptual match exists.  
-    • If multiple images or tables match a section well, include all of them. Assign each item only once per section, using different keys: e.g., "image", "image1", "table", "table1", etc.
+    • If multiple images or tables match a subsection well, include all of them. Assign each item only once per subsection, using different keys: e.g., "image", "image1", "table", "table1", etc.
     • If assigning an image, specify “image”: <id>, where <id> is the identifier of the chosen image from “image_information”.
     • If assigning a table, specify “table”: <id>, where <id> is the identifier of the chosen table from “table_information”.
     • Include an additional “reason”, "reason1", etc. field briefly explaining why this assignment was made (e.g., how the image/table relates to the section content).
@@ -25,6 +26,10 @@ system_prompt: |
   
   IMPORTANT: 
     • The assignment should not be arbitrary. It must be logically consistent with the section’s description and the provided caption for the image or table. 
+    • In `technical` mode, preserve the visual role of the shared backbone sections implied by the current outline:
+      - Use overview, motivation, contribution, key-result, and takeaway figures for the broad summary subsections.
+      - Use more detailed diagrams, tables, formulas, or charts for technical-only subsections.
+      - The technical result should feel like a high-level visual story with additional technical evidence, not a deck made only of low-level detail.
     • Do not produce any layout properties or subsections here. 
     • The final output must be a single JSON object, mapping from section names to the chosen image/table ID plus the “reason” field.
     • Extra note: If multiple images or tables are suitable, select the single best one and assign only that. 
@@ -37,6 +42,7 @@ template: |
        - If a section's description or subject matter matches well with a given image/table caption, consider assigning it. 
        - If multiple images or tables seem relevant, choose the single best fit. 
        - If none of the images or tables are relevant, or if none are provided, do not assign anything for that section.
+       - In technical mode, assign broad overview visuals to backbone summary subsections, then add detailed visuals for technical-only subsections.
     3. Produce a single JSON object. Each key is the exact name of a top-level section (e.g., "Introduction", "Methods", "Results"), and the value is an object with:
        • "image": image_id or "table": table_id
        • "reason": short explanation describing why the image/table is assigned
@@ -44,10 +50,14 @@ template: |
     6. Ensure your final response strictly follows JSON syntax with no extra commentary.
     7. Keep the original hierarchy (sections → subsections).  
     8. Use imageN / reason(N-1) and tableN / reasonTN naming as described.  
-    9. No image/table reuse limits across subsections, but do not repeat an item twice
-       inside the same subsection.   
- 
-  
+    9. The same image or table should normally appear in only one subsection.
+       Reuse is allowed only for global overview visuals or major summary
+       figures with clear value in multiple subsections, but do not repeat
+       an item twice inside the same section.   
+
+  outline_mode:
+  {{ outline_mode | default("high_level") }}
+
   Example output format if two sections are assigned:
   {
     "sections": [
@@ -92,3 +102,4 @@ jinja_args:
   - json_content
   - image_information
   - table_information
+  - outline_mode
