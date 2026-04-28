@@ -224,6 +224,7 @@ PPTAgent/
 raw_result_output.txt
 *.json
 *.md
+!CHANGELOG.md
 *.jsonl
 *.zip
 *.xlsx
