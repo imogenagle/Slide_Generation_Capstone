@@ -42,7 +42,7 @@ template: |
   - deck-level local estimates
 
   Important:
-  - The local metrics are only crude structural hints about text density, overall busyness, brightness, and colorfulness.
+  - The local metrics are only crude structural hints about text density, brightness, and colorfulness.
   - They are NOT reliable detectors of figures, tables, formulas, or charts.
   - Infer figure, table, and formula usage primarily from the slide images themselves, not from the local metrics.
 
@@ -56,7 +56,6 @@ template: |
   {{ section_category_values | tojson }}
 
   Interpret the fields as:
-  - slide_count_preference: tendency toward short vs long decks
   - section_splitting_preference: whether sections are compressed or split across many slides
   - bullet_density_preference: few vs many bullets per slide
   - text_density_preference: little vs heavy text on slides
@@ -92,7 +91,6 @@ template: |
       }
     },
     "planning_preferences": {
-      "slide_count_preference": "low|medium|high|unknown",
       "section_splitting_preference": "coarse|balanced|fine_grained|unknown",
       "bullet_density_preference": "low|medium|high|unknown",
       "text_density_preference": "low|medium|high|unknown",

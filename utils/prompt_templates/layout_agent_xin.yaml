@@ -57,11 +57,53 @@ system_prompt: |
      • **Formulas** belonging to the same subsection should stay **on the same slide whenever possible**; if more than 2, prefer `T11_3Img_TopTextBottom`.  
      • **Do not crop or distort images** - preserve original aspect ratio (minor scaling to fit is fine).
 
-  4. **If an author preference profile is provided, treat it as a soft planning bias rather than a hard rule.**
-     • Use it to break ties when multiple slide plans are reasonable.
-     • Let it influence slide density, bullet density, visual usage, and template preference only when it does not conflict with the paper content or template constraints.
-     • Never invent slides, visuals, or structure solely because the profile suggests them.
-     • Ignore any preference that is irrelevant to the current subsection or unsupported by the current paper evidence.
+  4. **If an author preference profile is provided, actively optimize for it whenever the paper supports multiple reasonable slide plans.**
+     • Do not use the profile only as a tie-breaker. Use it as a planning target for section splitting, bullet density, text density, visual density, and template choice.
+     • The profile is still subordinate to paper fidelity: never invent claims, visuals, sections, or formulas that are unsupported by the paper evidence.
+     • When the paper supports multiple faithful decompositions, prefer the one that best matches the profile.
+     • If a profile preference cannot be satisfied because the paper lacks supporting content or visuals, ignore that preference instead of hallucinating support for it.
+
+  5. **Operationalize the author profile explicitly when present.**
+     • If `numeric_preferences` is present, prefer those concrete targets over coarse label-only guesses for slide density.
+     • `section_splitting_preference`
+       - `coarse`: merge related subsections into broader slides.
+       - `balanced`: use a mix of broad and split slides; split only the most content-rich sections.
+       - `fine_grained`: split complex sections into more slides.
+     • `bullet_density_preference`
+       - `low`: fewer bullets per slide.
+       - `medium`: about 3-4 top-level bullets per slide unless content strongly requires otherwise; avoid many very sparse 1-2 bullet slides.
+       - `high`: use denser bulleting when legible.
+     • `text_density_preference`
+       - `low`: short, sparse text.
+       - `medium`: moderate text.
+       - `high`: preserve more substantive detail per slide while remaining legible.
+       - if `numeric_preferences.avg_text_density_proxy` is present, use it as a deck-level target for how text-heavy the slides should feel relative to prior decks.
+     • `visual_density_preference`
+       - `low`: use visuals selectively.
+       - `medium`: frequent but not maximal visual use.
+       - `high`: favor more visual-heavy layouts when supported.
+     • `figure_usage_preference`, `table_usage_preference`, `formula_usage_preference`
+       - treat these as desired relative frequencies across the whole deck, not per-slide requirements.
+       - prefer to match them over the whole plan while staying faithful to available assets.
+     • `layout_bias`
+       - if it includes `multi_visual`, prefer multi-visual templates when the subsection genuinely has enough supporting assets and legibility is preserved.
+       - if it includes `formula_capable`, prefer formula-capable templates whenever formulas are available for that subsection.
+     • `structure_preferences`
+       - if `prefers_multi_slide_method_section` is `high`, split a content-rich method/approach/system section across multiple slides when the paper supports it.
+       - if `prefers_multi_slide_results_section` is `high`, split a content-rich results/evaluation/analysis section across multiple slides when the paper supports it.
+       - if `prefers_takeaway_slide` is `medium` or `high`, preserve a clear final takeaway/conclusion slide when supported by the paper.
+
+  6. **Use whole-deck planning, not only local subsection decisions.**
+     • Before finalizing the JSON, sanity-check the full deck against the profile:
+       - average density,
+       - whether method/results are overly compressed or overly expanded,
+       - whether tables and formulas are underused or overused relative to available assets,
+       - whether `layout_bias` is visible in the chosen templates.
+     • If the draft deck is clearly inconsistent with the profile and another equally faithful plan is possible, revise the plan toward the profile before returning JSON.
+     • Prefer deck-level consistency over making isolated local decisions that ignore the overall style target.
+     • If the draft is too long for the profile, merge adjacent subsections that support the same narrative point instead of giving each subsection its own slide.
+     • If `bullet_density_preference` is `medium`, prefer combining thin neighboring content into a stronger 3-4 bullet slide rather than producing many sparse slides.
+     • If `text_density_preference` is `high`, preserve more substance per slide before creating a new slide.
 
 
 template: |

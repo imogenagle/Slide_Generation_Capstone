@@ -58,6 +58,13 @@ def append_outline_mode_suffix(paper_name: str, outline_mode: str) -> str:
     return f"{base}_{outline_mode}"
 
 
+def append_personalized_folder_suffix(paper_name: str, use_author_preferences: bool) -> str:
+    base = paper_name.strip().replace(" ", "_")
+    if not use_author_preferences or base.endswith("_personalized"):
+        return base
+    return f"{base}_personalized"
+
+
 def find_target_paper_id(paper_path: str) -> str | None:
     papers_csv = Path("Capstone/author_tables/papers.csv")
     if not papers_csv.exists():
@@ -208,13 +215,6 @@ if __name__ == '__main__':
         args.paper_name = paper_name
             
 
-    output_pptx = f'contents/{args.paper_name}/{args.model_name_t}_{args.model_name_v}_output_slides.pptx'
- 
-    # if os.path.exists(output_pptx):
-    #     print(f"[SKIP] 已存在 {output_pptx}，程序结束。")
-    #     sys.exit(0)
-
-
     paper_key = f"<{args.model_name_t}_{args.model_name_v}>_{paper_name}"
    
     agent_config_t = get_agent_config(args.model_name_t)
@@ -269,6 +269,16 @@ if __name__ == '__main__':
                 args.use_author_preferences = False
                 args.author_profile_path = None
                 detail_log['author_preferences_fallback_reason'] = str(exc)
+
+        args.paper_name = append_personalized_folder_suffix(args.paper_name, args.use_author_preferences)
+        paper_name = args.paper_name
+        detail_log['output_paper_name'] = args.paper_name
+
+        output_pptx = f'contents/{args.paper_name}/{args.model_name_t}_{args.model_name_v}_output_slides.pptx'
+
+        # if os.path.exists(output_pptx):
+        #     print(f"[SKIP] 已存在 {output_pptx}，程序结束。")
+        #     sys.exit(0)
 
         # Step 1: Parse the raw paper
         input_token, output_token, _parse_time_taken, raw_result = parse_raw(args, agent_config_t, version=2)

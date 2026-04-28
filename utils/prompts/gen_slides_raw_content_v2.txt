@@ -10,7 +10,7 @@ You will receive an `outline_mode`:
 • `technical`: create a listener-friendly technical presentation for a scientific conference. Keep the high-level presentation spine intact, including motivation, problem framing, approach overview, main contributions, key results, and takeaways when supported by the document. Then expand that spine with additional technical sections and subsections needed for a technically complete understanding of the work, including important methods, components, datasets, baselines, metrics, ablations, formulas, tables, limitations, and implementation-relevant details when present in the source.
 
 You may also receive an optional `author_preference_profile` distilled from that author's prior decks.
-Treat it as a soft presentation-style prior, not a source of factual content.
+Treat it as an active outline-style target when multiple faithful outline structures are possible, but never as a source of factual content.
 
 HARD RULES  
 1. Output ONLY the JSON object—no extra text.  
@@ -60,17 +60,28 @@ HARD RULES
    → you must reflect each step as a **separate subsection** under the appropriate section.  
    → Each step should have its own `title` and `content` field, clearly summarizing that part.
 11. English only.
-12. If `author_preference_profile` is provided, you may let it influence:
+12. If `author_preference_profile` is provided, you should let it influence:
    • how many sections/subsections to create,
    • whether to include common deck sections such as context, motivation, related work, limitations, recommendations, takeaways, or conclusion,
    • whether dense parts should be split into multiple subsections,
    • which broad section categories seem characteristic for this author, especially if `planning_preferences.typical_section_categories` is present,
    • overall outline granularity for the eventual deck.
-13. The author profile is a soft bias only:
-   • use it to break ties when multiple outline structures are reasonable,
+13. The author profile is a planning target when multiple content-faithful outlines are possible:
+   • do not use it only to break ties; actively choose the content-faithful outline shape that best matches the profile,
    • never invent a section that is unsupported by the document,
    • never omit a central document component just because the profile tends to skip it,
    • prefer content-faithful outlines over stylistic matching.
+14. Operationalize the profile explicitly when present:
+   • if `section_splitting_preference` is `balanced`, avoid both extremes:
+     - do not collapse the whole paper into a tiny number of broad subsections,
+     - do not split every technical detail into its own subsection.
+   • if `bullet_density_preference` or `text_density_preference` is `medium`/`high`, prefer fewer but richer subsections rather than many thin subsections.
+   • if `numeric_preferences.avg_text_density_proxy` is present and appears relatively high, prefer fewer, richer subsections over many short subsections.
+   • if `prefers_multi_slide_method_section` is `high`, allow one content-rich method/approach section to contain multiple subsections, but do not let every method detail become its own subsection in `high_level` mode.
+   • if `prefers_multi_slide_results_section` is `high`, preserve enough results/evaluation structure for multiple slides, but still merge repetitive metrics, ablations, or variants in `high_level` mode.
+15. Before returning the outline, do a deck-budget sanity check:
+   • estimate whether this outline would likely create too many slides for the requested mode and profile.
+   • if yes, merge neighboring subsections that support the same presentation point before returning the JSON.
  
 OPTIONAL RULES  
 • If the document explicitly labels parts as “Step 1 / Step 2 / …” (or stages, phases, modules), you may map **each step to a separate subsection**.  

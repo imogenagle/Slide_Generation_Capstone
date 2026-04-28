@@ -131,6 +131,18 @@ def bucket_score(value: float, low: float = 0.33, high: float = 0.66) -> str:
     return "high"
 
 
+def mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def stdev(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    avg = mean(values)
+    variance = sum((value - avg) ** 2 for value in values) / len(values)
+    return variance ** 0.5
+
+
 def compute_colorfulness(image_bgr: Any) -> float:
     (b_channel, g_channel, r_channel) = cv2.split(image_bgr.astype("float"))
     rg = cv2.absdiff(r_channel, g_channel)
@@ -175,8 +187,6 @@ def compute_slide_metrics(slide_path: Path) -> dict[str, Any]:
         cv2.drawContours(mser_mask, [hull], -1, 255, -1)
     text_region_ratio = float((mser_mask > 0).mean())
 
-    visual_interest = clamp01((0.55 * colorfulness) + (0.45 * edge_density * 4.0))
-
     return {
         "slide_path": str(slide_path),
         "readable": True,
@@ -189,7 +199,6 @@ def compute_slide_metrics(slide_path: Path) -> dict[str, Any]:
         "edge_density": round(edge_density, 4),
         "colorfulness": round(colorfulness, 4),
         "text_region_ratio": round(text_region_ratio, 4),
-        "visual_interest": round(visual_interest, 4),
     }
 
 
@@ -198,46 +207,29 @@ def aggregate_deck_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     if not readable:
         return {
             "text_density_estimate": "unknown",
-            "visual_busyness_estimate": "unknown",
             "avg_slide_brightness": "unknown",
             "avg_slide_colorfulness": "unknown",
+            "numeric_stats": {
+                "avg_text_region_ratio": 0.0,
+                "avg_brightness": 0.0,
+                "avg_colorfulness": 0.0,
+            },
         }
 
     avg_text_ratio = sum(metric["text_region_ratio"] for metric in readable) / len(readable)
-    avg_visual_interest = sum(metric["visual_interest"] for metric in readable) / len(readable)
     avg_brightness = sum(metric["brightness"] for metric in readable) / len(readable)
     avg_colorfulness = sum(metric["colorfulness"] for metric in readable) / len(readable)
 
     return {
         "text_density_estimate": bucket_score(clamp01(avg_text_ratio * 4.0)),
-        "visual_busyness_estimate": bucket_score(avg_visual_interest),
         "avg_slide_brightness": bucket_score(avg_brightness),
         "avg_slide_colorfulness": bucket_score(avg_colorfulness),
+        "numeric_stats": {
+            "avg_text_region_ratio": round(avg_text_ratio, 4),
+            "avg_brightness": round(avg_brightness, 4),
+            "avg_colorfulness": round(avg_colorfulness, 4),
+        },
     }
-
-
-def sample_representative_slide_indices(metrics: list[dict[str, Any]]) -> list[int]:
-    if not metrics:
-        return []
-
-    count = len(metrics)
-    indices = {0}
-    if count > 1:
-        indices.add(1)
-    indices.add(count // 2)
-    if count > 2:
-        indices.add(count - 2)
-
-    remaining = [idx for idx in range(count) if idx not in indices and metrics[idx].get("readable")]
-    if remaining:
-        extra_index = max(
-            remaining,
-            key=lambda idx: metrics[idx].get("visual_interest", 0.0),
-        )
-        if metrics[extra_index].get("visual_interest", 0.0) >= 0.45:
-            indices.add(extra_index)
-
-    return sorted(index for index in indices if 0 <= index < count)
 
 
 def encode_image_data_uri(image_path: Path) -> str:
@@ -270,7 +262,80 @@ def extract_json_object(raw_text: str) -> dict[str, Any]:
         raise
 
 
-def sanitize_profile(raw_profile: dict[str, Any], author_id: str, paper_ids: list[str], max_papers: int) -> dict[str, Any]:
+def sample_representative_slide_indices(metrics: list[dict[str, Any]], max_samples: int = 6) -> list[int]:
+    if not metrics:
+        return []
+
+    count = len(metrics)
+    readable_indices = [idx for idx, metric in enumerate(metrics) if metric.get("readable")]
+    if count <= max_samples:
+        return readable_indices
+
+    indices: list[int] = []
+
+    def add_index(idx: int) -> None:
+        if 0 <= idx < count and idx in readable_indices and idx not in indices and len(indices) < max_samples:
+            indices.append(idx)
+
+    # Cover opening, early, middle, late, and closing deck regions.
+    for candidate in [0, 1, count // 3, count // 2, (2 * count) // 3, count - 1]:
+        add_index(candidate)
+
+    remaining = [idx for idx in readable_indices if idx not in indices]
+
+    # If deck length causes anchor collisions, backfill with slides that are
+    # unusually text-heavy or visually distinctive.
+    def add_extreme(metric_key: str) -> None:
+        nonlocal remaining
+        if len(indices) >= max_samples or not remaining:
+            return
+        chosen = max(remaining, key=lambda idx: metrics[idx].get(metric_key, 0.0))
+        add_index(chosen)
+        remaining = [idx for idx in remaining if idx != chosen]
+
+    add_extreme("text_region_ratio")
+    add_extreme("colorfulness")
+    add_extreme("edge_density")
+
+    while len(indices) < max_samples and remaining:
+        # Evenly fill any leftover slots if duplicates reduced anchor coverage.
+        step = max(1, len(remaining) // max(1, (max_samples - len(indices))))
+        chosen = remaining[0]
+        add_index(chosen)
+        remaining = remaining[step:]
+
+    return sorted(indices)
+
+
+def build_numeric_preferences(deck_evidence: list[dict[str, Any]]) -> dict[str, float]:
+    text_ratios: list[float] = []
+    brightness: list[float] = []
+    colorfulness: list[float] = []
+
+    for deck in deck_evidence:
+        numeric_stats = ((deck.get("deck_stats") or {}).get("numeric_stats") or {})
+        if "avg_text_region_ratio" in numeric_stats:
+            text_ratios.append(float(numeric_stats["avg_text_region_ratio"]))
+        if "avg_brightness" in numeric_stats:
+            brightness.append(float(numeric_stats["avg_brightness"]))
+        if "avg_colorfulness" in numeric_stats:
+            colorfulness.append(float(numeric_stats["avg_colorfulness"]))
+
+    return {
+        "avg_text_density_proxy": round(mean(text_ratios), 4),
+        "text_density_proxy_std": round(stdev(text_ratios), 4),
+        "avg_brightness_proxy": round(mean(brightness), 4),
+        "avg_colorfulness_proxy": round(mean(colorfulness), 4),
+    }
+
+
+def sanitize_profile(
+    raw_profile: dict[str, Any],
+    author_id: str,
+    paper_ids: list[str],
+    max_papers: int,
+    deck_evidence: list[dict[str, Any]],
+) -> dict[str, Any]:
     planning = raw_profile.get("planning_preferences", {}) or {}
     structure = planning.get("structure_preferences", {}) or {}
     layout_bias = planning.get("layout_bias", []) or []
@@ -304,10 +369,11 @@ def sanitize_profile(raw_profile: dict[str, Any], author_id: str, paper_ids: lis
             cleaned_section_categories.append(value)
 
     notes = raw_profile.get("evidence_summary", {}).get("notes", "")
+    numeric_preferences = build_numeric_preferences(deck_evidence)
 
     return {
         "author_id": author_id,
-        "profile_version": 2,
+        "profile_version": 3,
         "distilled_from": {
             "paper_count": len(paper_ids),
             "paper_ids": paper_ids,
@@ -317,7 +383,6 @@ def sanitize_profile(raw_profile: dict[str, Any], author_id: str, paper_ids: lis
             },
         },
         "planning_preferences": {
-            "slide_count_preference": pref("slide_count_preference"),
             "section_splitting_preference": split_pref("section_splitting_preference"),
             "bullet_density_preference": pref("bullet_density_preference"),
             "text_density_preference": pref("text_density_preference"),
@@ -334,6 +399,7 @@ def sanitize_profile(raw_profile: dict[str, Any], author_id: str, paper_ids: lis
                 "prefers_multi_slide_results_section": structure_pref("prefers_multi_slide_results_section"),
             },
         },
+        "numeric_preferences": numeric_preferences,
         "evidence_summary": {
             "notes": str(notes).strip() or "No summary provided.",
         },
@@ -479,15 +545,20 @@ def call_distiller_model(model_name: str, system_prompt: str, user_prompt: str, 
                 }
             )
 
-    response = client.chat.completions.create(
-        model=resolved_model_name,
-        messages=[
+    request_kwargs = {
+        "model": resolved_model_name,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content},
         ],
-        temperature=0.2,
-        max_tokens=1400,
-    )
+        "temperature": 0.2,
+    }
+    if "gpt-5" in resolved_model_name.lower():
+        request_kwargs["max_completion_tokens"] = 1400
+    else:
+        request_kwargs["max_tokens"] = 1400
+
+    response = client.chat.completions.create(**request_kwargs)
     raw_text = response.choices[0].message.content or ""
     return extract_json_object(raw_text)
 
@@ -557,6 +628,7 @@ def distill_author_profile(
         author_id=author_id,
         paper_ids=author_metadata["paper_ids"],
         max_papers=max_papers,
+        deck_evidence=deck_evidence,
     )
     profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
     return profile
