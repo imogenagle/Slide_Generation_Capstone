@@ -272,13 +272,13 @@ def get_agent_config(model_type):
             "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
             # "model_name": '4o'
         }
-    elif model_type in ("gpt-5", "gpt5"):
+    elif model_type in ("gpt-5", "gpt5", "gpt-5.4-nano"):
     
         agent_config = {
             "model_type": ModelType.GPT_5,  
             "model_config": ChatGPTConfig().as_dict(),
             "model_platform": resolve_model_platform(model_type, ModelPlatformType.OPENAI),
-            "model_name": "gpt-5",  
+            "model_name": "gpt-5.4-nano" if model_type == "gpt-5.4-nano" else "gpt-5",
         }
 
     elif model_type == '4o-mini':

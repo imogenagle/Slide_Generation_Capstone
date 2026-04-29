@@ -10,9 +10,6 @@ from tenacity import retry, stop_after_attempt
 from docling_core.types.doc import ImageRefMode, PictureItem, TableItem 
  
 from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc.document import BoundingBox
 from docling_core.types.doc.document import CoordOrigin
 from pathlib import Path
@@ -46,36 +43,20 @@ def create_model_dict(*args, **kwargs):
 
     return _create_model_dict(*args, **kwargs)
 
-pipeline_options = PdfPipelineOptions()
-pipeline_options.images_scale = IMAGE_RESOLUTION_SCALE
-pipeline_options.generate_page_images = True
-pipeline_options.generate_picture_images = True
+def _import_docling():
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
 
-doc_converter = DocumentConverter(
-    format_options={
-        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-    }
-)
+    return InputFormat, PdfPipelineOptions, DocumentConverter, PdfFormatOption
 
- 
-def build_converter( ) -> DocumentConverter:
-    opts = PdfPipelineOptions() 
+
+def build_converter():
+    InputFormat, PdfPipelineOptions, DocumentConverter, PdfFormatOption = _import_docling()
+    opts = PdfPipelineOptions()
     opts.images_scale = IMAGE_RESOLUTION_SCALE
     opts.generate_page_images = True
     opts.generate_picture_images = True
-     
-    for name in (
-        "do_ocr",
-        "do_formula_enrichment",       
-        "do_formula_understanding",    
-    ):
-        if hasattr(opts, name):
-            setattr(opts, name, True)
-
-     
-    for name in ("do_code_enrichment",):
-        if hasattr(opts, name):
-            setattr(opts, name, False)
 
     conv = DocumentConverter(
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
@@ -378,7 +359,7 @@ def parse_raw(args, actor_config, version=1):
     raw_source = args.paper_path
     markdown_clean_pattern = re.compile(r"<!--[\s\S]*?-->")
 
-    raw_result = doc_converter.convert(raw_source)
+    raw_result = build_converter().convert(raw_source)
     input_token, output_token =0,0
     
     raw_markdown = raw_result.document.export_to_markdown()
@@ -582,17 +563,26 @@ def gen_image_and_table(args, conv_res):
                 element.get_image(conv_res.document).save(fp, "PNG")
    
 
-    # Save markdown with embedded pictures
-    md_filename = output_dir / f"{doc_filename}-with-images.md"
-    conv_res.document.save_as_markdown(md_filename, image_mode=ImageRefMode.EMBEDDED)
+    # These exports are useful for inspection, but they are not required for the
+    # downstream slide-generation pipeline. On some synced macOS folders, PIL/Docling
+    # can time out while saving referenced image assets, so we treat them as best effort.
+    try:
+        md_filename = output_dir / f"{doc_filename}-with-images.md"
+        conv_res.document.save_as_markdown(md_filename, image_mode=ImageRefMode.EMBEDDED)
+    except (TimeoutError, OSError) as exc:
+        print(f"[warning] Skipping embedded markdown export: {exc}")
 
-    # Save markdown with externally referenced pictures
-    md_filename = output_dir / f"{doc_filename}-with-image-refs.md"
-    conv_res.document.save_as_markdown(md_filename, image_mode=ImageRefMode.REFERENCED)
+    try:
+        md_filename = output_dir / f"{doc_filename}-with-image-refs.md"
+        conv_res.document.save_as_markdown(md_filename, image_mode=ImageRefMode.REFERENCED)
+    except (TimeoutError, OSError) as exc:
+        print(f"[warning] Skipping referenced markdown export: {exc}")
 
-    # Save HTML with externally referenced pictures
-    html_filename = output_dir / f"{doc_filename}-with-image-refs.html"
-    conv_res.document.save_as_html(html_filename, image_mode=ImageRefMode.REFERENCED)
+    try:
+        html_filename = output_dir / f"{doc_filename}-with-image-refs.html"
+        conv_res.document.save_as_html(html_filename, image_mode=ImageRefMode.REFERENCED)
+    except (TimeoutError, OSError) as exc:
+        print(f"[warning] Skipping HTML export: {exc}")
 
     tables = {}
 

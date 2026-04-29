@@ -25,19 +25,19 @@ import csv
 import json
 import os
 import time
- 
 
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption
 
-pipeline_options = PdfPipelineOptions() 
+def build_doc_converter():
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
 
-doc_converter = DocumentConverter(
-    format_options={
-        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-    }
-)
+    pipeline_options = PdfPipelineOptions()
+    return DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+        }
+    )
 # Create a theme profile here
 theme_title_text_color = (255,255,0)
 theme_title_fill_color = (255,255,0)
@@ -187,13 +187,16 @@ if __name__ == '__main__':
                         help='Canonical author_id used by the preference distiller.')
     parser.add_argument('--author_profile_path', type=str, default=None,
                         help='Optional path to an existing distilled author profile JSON.')
-    parser.add_argument('--preference_model', type=str, default='4o-mini',
-                        help='Model used to generate the author preference profile if needed.')
+    parser.add_argument('--preference_model', type=str, default=None,
+                        help='Model used to generate the author preference profile if needed. Defaults to --model_name_t.')
     parser.add_argument('--preference_max_papers', type=int, default=5,
                         help='Maximum number of prior decks to sample for preference distillation.')
     parser.add_argument('--force_refresh_preferences', action='store_true',
                         help='Regenerate the author profile even if a cached profile JSON already exists.')
     args = parser.parse_args()
+
+    if args.preference_model is None:
+        args.preference_model = args.model_name_t
 
     
     if args.formula_mode == 1:
@@ -294,7 +297,7 @@ if __name__ == '__main__':
         #     sys.exit(0)
 
         raw_source = args.paper_path
-        raw_result = doc_converter.convert(raw_source)
+        raw_result = build_doc_converter().convert(raw_source)
         # Step 1: Parse the raw paper
         input_token, output_token, time_taken, raw_result = parse_raw(args, agent_config_t, version=2)
             

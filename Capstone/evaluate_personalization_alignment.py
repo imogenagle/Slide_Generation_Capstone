@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,11 @@ SCORE_KEYS = [
     "layout_bias_alignment",
     "overall_style_alignment",
 ]
+
+
+def log(message: str, *, verbose: bool) -> None:
+    if verbose:
+        print(f"[evaluate_personalization_alignment] {message}", file=sys.stderr, flush=True)
 
 
 def extract_json_object(raw_text: str) -> dict[str, Any]:
@@ -288,7 +294,14 @@ def render_prompt(
     }
 
 
-def call_alignment_judge(model: str, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+def call_alignment_judge(
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    request_timeout: float,
+    verbose: bool,
+) -> dict[str, Any]:
     client = build_openai_client()
     resolved_model = resolve_direct_model_name(model)
 
@@ -299,13 +312,21 @@ def call_alignment_judge(model: str, system_prompt: str, user_prompt: str) -> di
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.1,
+        "timeout": request_timeout,
     }
     if "gpt-5" in resolved_model.lower():
         request_kwargs["max_completion_tokens"] = 2200
     else:
         request_kwargs["max_tokens"] = 2200
 
+    log(
+        f"Sending judge request to model={resolved_model!r} with timeout={request_timeout:.1f}s",
+        verbose=verbose,
+    )
+    started_at = time.time()
     response = client.chat.completions.create(**request_kwargs)
+    elapsed = time.time() - started_at
+    log(f"Judge response received in {elapsed:.2f}s", verbose=verbose)
     raw_text = response.choices[0].message.content or ""
     return extract_json_object(raw_text)
 
@@ -338,21 +359,35 @@ def main() -> None:
     parser.add_argument("--model", default="gpt-5", help="Judge model identifier.")
     parser.add_argument("--prompt-path", type=Path, default=DEFAULT_PROMPT_PATH)
     parser.add_argument("--output", type=Path, default=None, help="Optional output JSON path.")
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=180.0,
+        help="Timeout in seconds for the judge model request.",
+    )
     parser.add_argument("--print-prompt", action="store_true")
+    parser.add_argument("--verbose", action="store_true", help="Print progress messages to stderr.")
     args = parser.parse_args()
 
     load_dotenv(REPO_ROOT / ".env")
 
+    for path_arg in (args.profile, args.baseline_plan, args.personalized_plan, args.prompt_path):
+        if not path_arg.exists():
+            raise FileNotFoundError(f"Required input not found: {path_arg}")
+
+    log("Loading profile and slide plans", verbose=args.verbose)
     author_profile = json.loads(args.profile.read_text(encoding="utf-8"))
     baseline_plan = json.loads(args.baseline_plan.read_text(encoding="utf-8"))
     personalized_plan = json.loads(args.personalized_plan.read_text(encoding="utf-8"))
 
+    log("Summarizing baseline and personalized plans", verbose=args.verbose)
     baseline_summary = summarize_slide_plan(baseline_plan)
     personalized_summary = summarize_slide_plan(personalized_plan)
     extracted_asset_summary = {
         "baseline": summarize_extracted_assets(args.baseline_plan),
         "personalized": summarize_extracted_assets(args.personalized_plan),
     }
+    log("Rendering judge prompt", verbose=args.verbose)
     prompt = render_prompt(
         args.prompt_path,
         author_profile,
@@ -365,7 +400,13 @@ def main() -> None:
         print(prompt["user_prompt"])
         return
 
-    report = call_alignment_judge(args.model, prompt["system_prompt"], prompt["user_prompt"])
+    report = call_alignment_judge(
+        args.model,
+        prompt["system_prompt"],
+        prompt["user_prompt"],
+        request_timeout=args.request_timeout,
+        verbose=args.verbose,
+    )
     report = coerce_scores(report)
     numeric_target_summary = build_numeric_target_summary(author_profile)
     numeric_comparison = build_numeric_comparison(
@@ -392,8 +433,13 @@ def main() -> None:
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(output_text, encoding="utf-8")
+        log(f"Wrote report to {args.output}", verbose=args.verbose)
     print(output_text)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

@@ -174,13 +174,16 @@ if __name__ == '__main__':
                         help='Canonical author_id used by the preference distiller.')
     parser.add_argument('--author_profile_path', type=str, default=None,
                         help='Optional path to an existing distilled author profile JSON.')
-    parser.add_argument('--preference_model', type=str, default='4o-mini',
-                        help='Model used to generate the author preference profile if needed.')
+    parser.add_argument('--preference_model', type=str, default=None,
+                        help='Model used to generate the author preference profile if needed. Defaults to --model_name_t.')
     parser.add_argument('--preference_max_papers', type=int, default=5,
                         help='Maximum number of prior decks to sample for preference distillation.')
     parser.add_argument('--force_refresh_preferences', action='store_true',
                         help='Regenerate the author profile even if a cached profile JSON already exists.')
     args = parser.parse_args()
+
+    if args.preference_model is None:
+        args.preference_model = args.model_name_t
 
     
     if args.formula_mode == 1:
