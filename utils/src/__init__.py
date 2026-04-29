@@ -1,5 +1,3 @@
-from . import (
-    model_utils,
-    presentation,
-    utils
-)
+"""Lightweight package init for utils.src."""
+
+__all__ = []

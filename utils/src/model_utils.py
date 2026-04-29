@@ -1,14 +1,10 @@
 import json
 import os
 from copy import deepcopy
+from typing import Any
 
 import numpy as np
-import torch
-import torchvision.transforms as T
-from FlagEmbedding import BGEM3FlagModel
 from PIL import Image
-from torchvision.transforms.functional import InterpolationMode
-from transformers import AutoFeatureExtractor, AutoModel
 
 try:
     from marker.config.parser import ConfigParser
@@ -21,12 +17,12 @@ except ImportError:
 from utils.src.presentation import Presentation, SlidePage
 from utils.src.utils import is_image_path, pjoin
 
-device_count = torch.cuda.device_count()
+device_count = 0
 
 
 def prs_dedup(
     presentation: Presentation,
-    model: BGEM3FlagModel,
+    model: Any,
     batchsize: int = 32,
     threshold: float = 0.8,
 ) -> list[SlidePage]:
@@ -42,6 +38,8 @@ def prs_dedup(
     Returns:
         list: A list of removed duplicate slides.
     """
+    import torch
+
     text_embeddings = get_text_embedding(
         [i.to_text() for i in presentation.slides], model, batchsize
     )
@@ -57,7 +55,7 @@ def prs_dedup(
     return [presentation.slides.pop(i) for i in reversed(duplicates)]
 
 
-def get_text_model(device: str = None) -> BGEM3FlagModel:
+def get_text_model(device: str = None):
     """
     Initialize and return a text model.
 
@@ -67,6 +65,8 @@ def get_text_model(device: str = None) -> BGEM3FlagModel:
     Returns:
         BGEM3FlagModel: The initialized text model.
     """
+    from FlagEmbedding import BGEM3FlagModel
+
     return BGEM3FlagModel(
         "BAAI/bge-m3",
         use_fp16=True,
@@ -84,6 +84,9 @@ def get_image_model(device: str = None):
     Returns:
         tuple: A tuple containing the feature extractor and the image model.
     """
+    import torch
+    from transformers import AutoFeatureExtractor, AutoModel
+
     model_base = "google/vit-base-patch16-224-in21k"
     return (
         AutoFeatureExtractor.from_pretrained(
@@ -162,8 +165,8 @@ def parse_pdf(
 
 
 def get_text_embedding(
-    text: list[str], model: BGEM3FlagModel, batchsize: int = 32
-) -> list[torch.Tensor]:
+    text: list[str], model: Any, batchsize: int = 32
+):
     """
     Generate text embeddings for a list of text strings.
 
@@ -175,6 +178,8 @@ def get_text_embedding(
     Returns:
         list: A list of text embeddings.
     """
+    import torch
+
     if isinstance(text, str):
         return torch.tensor(model.encode(text)["dense_vecs"]).to(model.device)
     result = []
@@ -189,7 +194,7 @@ def get_text_embedding(
 
 def get_image_embedding(
     image_dir: str, extractor, model, batchsize: int = 16
-) -> dict[str, torch.Tensor]:
+):
     """
     Generate image embeddings for images in a directory.
 
@@ -202,6 +207,9 @@ def get_image_embedding(
     Returns:
         dict: A dictionary mapping image filenames to their embeddings.
     """
+    import torch
+    import torchvision.transforms as T
+
     transform = T.Compose(
         [
             T.Resize(int((256 / 224) * extractor.size["height"])),
@@ -224,7 +232,7 @@ def get_image_embedding(
     return {image: embedding.flatten() for image, embedding in zip(images, embeddings)}
 
 
-def images_cosine_similarity(embeddings: list[torch.Tensor]) -> torch.Tensor:
+def images_cosine_similarity(embeddings):
     """
     Calculate the cosine similarity matrix for a list of embeddings.
     Args:
@@ -233,6 +241,8 @@ def images_cosine_similarity(embeddings: list[torch.Tensor]) -> torch.Tensor:
     Returns:
         torch.Tensor: A NxN similarity matrix.
     """
+    import torch
+
     embeddings = [embedding for embedding in embeddings]
     sim_matrix = torch.zeros((len(embeddings), len(embeddings)))
     for i in range(len(embeddings)):
@@ -248,7 +258,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 def average_distance(
-    similarity: torch.Tensor, idx: int, cluster_idx: list[int]
+    similarity: Any, idx: int, cluster_idx: list[int]
 ) -> float:
     """
     Calculate the average distance between a point (idx) and a cluster (cluster_idx).
