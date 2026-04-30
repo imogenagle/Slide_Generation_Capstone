@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from evaluate_core_coverage import DEFAULT_OUTPUT_DIR, REPO_ROOT, evaluate_core_coverage
+from evaluate_geometry_aware_density import evaluate_geometry_aware_density
 
 try:
     from dotenv import load_dotenv
@@ -94,6 +95,18 @@ def main() -> None:
     parser.add_argument("--max-original-slides", type=int, default=0)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
+        "--compute-gad",
+        action="store_true",
+        help="Also compute Geometry-Aware Density (GAD) for each generated PPTX.",
+    )
+    parser.add_argument("--gad-tau", type=float, default=0.5)
+    parser.add_argument("--gad-m-star", type=float, default=4.0)
+    parser.add_argument("--gad-kappa", type=float, default=6.3)
+    parser.add_argument("--gad-lambda-occupancy", type=float, default=0.5)
+    parser.add_argument("--gad-lambda-fragmentation", type=float, default=0.5)
+    parser.add_argument("--gad-area-min-ratio", type=float, default=0.005)
+    parser.add_argument("--gad-background-area-ratio", type=float, default=0.9)
+    parser.add_argument(
         "--save-in-contents",
         action="store_true",
         help="Save each evaluation JSON inside the corresponding contents/<paper_name>/ folder instead of --output-dir.",
@@ -119,6 +132,10 @@ def main() -> None:
 
     if not args.save_in_contents:
         args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    gad_lambda_sum = args.gad_lambda_occupancy + args.gad_lambda_fragmentation
+    if args.compute_gad and gad_lambda_sum <= 0:
+        raise SystemExit("GAD lambda weights must sum to a positive value.")
 
     missing_matches: list[str] = []
     evaluated = 0
@@ -154,6 +171,23 @@ def main() -> None:
         else:
             output_path = args.output_dir / f"{paper_id.replace(':', '_')}.core_coverage.json"
         output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        if args.compute_gad:
+            gad_result = evaluate_geometry_aware_density(
+                pptx_path=generated_pptx,
+                tau=args.gad_tau,
+                m_star=args.gad_m_star,
+                kappa=args.gad_kappa,
+                lambda_occupancy=args.gad_lambda_occupancy / gad_lambda_sum,
+                lambda_fragmentation=args.gad_lambda_fragmentation / gad_lambda_sum,
+                area_min_ratio=args.gad_area_min_ratio,
+                background_area_ratio=args.gad_background_area_ratio,
+            )
+            if args.save_in_contents:
+                gad_output_path = generated_pptx.parent / f"{paper_id.replace(':', '_')}.geometry_aware_density.json"
+            else:
+                gad_output_path = args.output_dir / f"{paper_id.replace(':', '_')}.geometry_aware_density.json"
+            gad_output_path.write_text(json.dumps(gad_result, indent=2, ensure_ascii=False), encoding="utf-8")
         evaluated += 1
 
     print(f"Matched generated decks: {len(generated) - len(missing_matches)} / {len(generated)}")

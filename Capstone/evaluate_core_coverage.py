@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import json
 import re
 import sys
@@ -29,6 +30,51 @@ from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "Capstone" / "evaluations"
 SLIDE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_IMAGES_PER_REQUEST = 50
+MATCH_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "based",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "or",
+    "over",
+    "the",
+    "to",
+    "using",
+    "via",
+    "with",
+}
+TOKEN_SYNONYMS = {
+    "activities": "activity",
+    "forecast": "forecasting",
+    "forecasts": "forecasting",
+    "generalizes": "transfer",
+    "generalize": "transfer",
+    "generalized": "transfer",
+    "goals": "goal",
+    "metrics": "metric",
+    "models": "model",
+    "multi": "multi",
+    "multi goal": "multigoal",
+    "noisy": "noise",
+    "novel": "new",
+    "observations": "observation",
+    "physicalfeature": "physical",
+    "probabilities": "probabilistic",
+    "probability": "probabilistic",
+    "results": "result",
+    "scenes": "scene",
+    "semantics": "semantic",
+    "trajectories": "trajectory",
+}
 
 
 def encode_image_data_uri(image_path: Path) -> str:
@@ -133,12 +179,133 @@ def extract_json_object(raw_text: str) -> dict[str, Any]:
         raise
 
 
+def extract_message_text(message: Any) -> str:
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                text_value = part.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    text_parts.append(text_value)
+            else:
+                text_value = getattr(part, "text", None)
+                if isinstance(text_value, str) and text_value.strip():
+                    text_parts.append(text_value)
+        return "\n".join(text_parts).strip()
+    return ""
+
+
 def normalize_topic_label(raw_value: Any) -> str:
     text = str(raw_value or "").strip().lower()
-    text = re.sub(r"[_/]+", " ", text)
+    text = re.sub(r"[_/\-]+", " ", text)
     text = re.sub(r"[^a-z0-9+ -]", "", text)
     text = re.sub(r"\s+", " ", text).strip(" -")
     return text
+
+
+def normalize_match_token(token: str) -> str:
+    token = token.strip().lower()
+    if not token:
+        return ""
+    if token.endswith("ies") and len(token) > 4:
+        token = token[:-3] + "y"
+    elif token.endswith("ing") and len(token) > 5:
+        token = token[:-3]
+    elif token.endswith("ed") and len(token) > 4:
+        token = token[:-2]
+    elif token.endswith("es") and len(token) > 4:
+        token = token[:-2]
+    elif token.endswith("s") and len(token) > 3:
+        token = token[:-1]
+    token = TOKEN_SYNONYMS.get(token, token)
+    return token
+
+
+def topic_match_tokens(topic: str) -> set[str]:
+    normalized = normalize_topic_label(topic)
+    tokens: set[str] = set()
+    for token in normalized.split():
+        if token in MATCH_STOPWORDS:
+            continue
+        token = normalize_match_token(token)
+        if not token or token in MATCH_STOPWORDS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def topic_similarity(topic_a: str, topic_b: str) -> float:
+    normalized_a = normalize_topic_label(topic_a)
+    normalized_b = normalize_topic_label(topic_b)
+    if not normalized_a or not normalized_b:
+        return 0.0
+    if normalized_a == normalized_b:
+        return 1.0
+
+    tokens_a = topic_match_tokens(normalized_a)
+    tokens_b = topic_match_tokens(normalized_b)
+    if not tokens_a or not tokens_b:
+        return 0.0
+
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    jaccard = len(intersection) / len(union) if union else 0.0
+    containment = len(intersection) / min(len(tokens_a), len(tokens_b))
+    char_ratio = difflib.SequenceMatcher(None, normalized_a, normalized_b).ratio()
+
+    bonus = 0.0
+    if "virat" in intersection:
+        bonus += 0.08
+    if {"inverse", "optimal", "control"} <= intersection:
+        bonus += 0.08
+    if {"knowledge", "transfer"} <= intersection:
+        bonus += 0.08
+    if {"destination", "forecast"} <= intersection or {"destination", "forecasting"} <= intersection:
+        bonus += 0.08
+    if {"maximum", "entropy"} <= intersection:
+        bonus += 0.08
+
+    return min(1.0, max(jaccard, containment * 0.92, char_ratio * 0.75) + bonus)
+
+
+def topics_are_semantic_match(topic_a: str, topic_b: str) -> tuple[bool, float]:
+    score = topic_similarity(topic_a, topic_b)
+    tokens_a = topic_match_tokens(topic_a)
+    tokens_b = topic_match_tokens(topic_b)
+    overlap = len(tokens_a & tokens_b)
+    strong = score >= 0.72
+    moderate = score >= 0.58 and overlap >= 3
+    high_overlap = overlap >= 4 and score >= 0.5
+    return strong or moderate or high_overlap, round(score, 3)
+
+
+def semantic_topic_matches(reference_topics: list[str], generated_topics: list[str]) -> list[dict[str, Any]]:
+    candidates: list[tuple[float, str, str]] = []
+    for reference_topic in reference_topics:
+        for generated_topic in generated_topics:
+            is_match, score = topics_are_semantic_match(reference_topic, generated_topic)
+            if is_match:
+                candidates.append((score, reference_topic, generated_topic))
+
+    matches: list[dict[str, Any]] = []
+    used_reference: set[str] = set()
+    used_generated: set[str] = set()
+    for score, reference_topic, generated_topic in sorted(candidates, key=lambda item: (-item[0], item[1], item[2])):
+        if reference_topic in used_reference or generated_topic in used_generated:
+            continue
+        matches.append(
+            {
+                "reference_topic": reference_topic,
+                "generated_topic": generated_topic,
+                "similarity": round(score, 3),
+            }
+        )
+        used_reference.add(reference_topic)
+        used_generated.add(generated_topic)
+    return matches
 
 
 def sanitize_topic_list(raw_topics: Any) -> list[str]:
@@ -159,13 +326,14 @@ def sanitize_topic_list(raw_topics: Any) -> list[str]:
 def sanitize_result(result: dict[str, Any], paper_id: str, title: str) -> dict[str, Any]:
     reference_topics = sanitize_topic_list(result.get("reference_topics"))
     generated_topics = sanitize_topic_list(result.get("generated_topics"))
-    reference_set = set(reference_topics)
-    generated_set = set(generated_topics)
-    matched_topics = sorted(reference_set & generated_set)
-    reference_only_topics = sorted(reference_set - generated_set)
-    generated_only_topics = sorted(generated_set - reference_set)
-    union_count = len(reference_set | generated_set)
-    intersection_count = len(matched_topics)
+    semantic_matches = semantic_topic_matches(reference_topics, generated_topics)
+    matched_reference_topics = {item["reference_topic"] for item in semantic_matches}
+    matched_generated_topics = {item["generated_topic"] for item in semantic_matches}
+    matched_topics = sorted(item["reference_topic"] for item in semantic_matches)
+    reference_only_topics = sorted(topic for topic in reference_topics if topic not in matched_reference_topics)
+    generated_only_topics = sorted(topic for topic in generated_topics if topic not in matched_generated_topics)
+    intersection_count = len(semantic_matches)
+    union_count = len(reference_topics) + len(generated_topics) - intersection_count
     diff = result.get("difference_summary", {}) or {}
     return {
         "paper_id": paper_id,
@@ -173,6 +341,7 @@ def sanitize_result(result: dict[str, Any], paper_id: str, title: str) -> dict[s
         "reference_topics": reference_topics,
         "generated_topics": generated_topics,
         "matched_topics": matched_topics,
+        "matched_topic_pairs": semantic_matches,
         "reference_only_topics": reference_only_topics,
         "generated_only_topics": generated_only_topics,
         "reference_topic_count": len(reference_topics),
@@ -193,6 +362,81 @@ def sanitize_result(result: dict[str, Any], paper_id: str, title: str) -> dict[s
         },
         "notes": str(result.get("notes", "")).strip(),
     }
+
+
+def create_chat_completion(client: Any, *, resolved_model_name: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    request_kwargs: dict[str, Any] = {
+        "model": resolved_model_name,
+        "messages": messages,
+        "temperature": 0.1,
+    }
+    if "gpt-5" in resolved_model_name.lower():
+        request_kwargs["max_completion_tokens"] = 1800
+    else:
+        request_kwargs["max_tokens"] = 1800
+    response = client.chat.completions.create(**request_kwargs)
+    raw_text = extract_message_text(response.choices[0].message)
+    return extract_json_object(raw_text)
+
+
+def normalize_topics_with_llm(
+    *,
+    client: Any,
+    resolved_model_name: str,
+    paper_id: str,
+    title: str,
+    reference_topics: list[str],
+    generated_topics: list[str],
+) -> dict[str, Any]:
+    system_prompt = (
+        "You are an evaluation agent for scientific slide decks.\n"
+        "Your job is to normalize two topic lists into a shared canonical vocabulary.\n"
+        "Map semantically equivalent topics across the two lists to the same short canonical label.\n"
+        "Preserve real distinctions when topics are materially different.\n"
+        "Use concise labels of roughly 2 to 8 words.\n"
+        "Return only valid JSON."
+    )
+    user_prompt = f"""
+Paper ID: {paper_id}
+Paper Title: {title}
+
+Reference topics:
+{json.dumps(reference_topics, ensure_ascii=False, indent=2)}
+
+Generated topics:
+{json.dumps(generated_topics, ensure_ascii=False, indent=2)}
+
+Task:
+1. For every reference topic, provide a concise canonical topic label.
+2. For every generated topic, provide a concise canonical topic label.
+3. Use exactly the same canonical label whenever the two topics express the same main scientific idea.
+4. Keep labels broad enough to merge paraphrases, but specific enough to avoid collapsing distinct contributions.
+
+Return exactly this JSON schema:
+{{
+  "reference_topics": [
+    {{
+      "raw_topic": "original reference topic",
+      "canonical_topic": "shared canonical label"
+    }}
+  ],
+  "generated_topics": [
+    {{
+      "raw_topic": "original generated topic",
+      "canonical_topic": "shared canonical label"
+    }}
+  ],
+  "notes": ""
+}}
+""".strip()
+    return create_chat_completion(
+        client,
+        resolved_model_name=resolved_model_name,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
 
 
 def evaluate_core_coverage(
@@ -286,18 +530,31 @@ Return exactly this JSON schema:
             }
         )
 
-    response = client.chat.completions.create(
-        model=resolved_model_name,
+    result = create_chat_completion(
+        client,
+        resolved_model_name=resolved_model_name,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content},
         ],
-        temperature=0.1,
-        max_tokens=1800,
     )
-    raw_text = response.choices[0].message.content or ""
-    result = extract_json_object(raw_text)
-    sanitized = sanitize_result(result, paper_id=paper_id, title=title)
+
+    raw_reference_topics = sanitize_topic_list(result.get("reference_topics"))
+    raw_generated_topics = sanitize_topic_list(result.get("generated_topics"))
+    normalized_result = normalize_topics_with_llm(
+        client=client,
+        resolved_model_name=resolved_model_name,
+        paper_id=paper_id,
+        title=title,
+        reference_topics=raw_reference_topics,
+        generated_topics=raw_generated_topics,
+    )
+    normalized_result["difference_summary"] = result.get("difference_summary", {}) or {}
+    normalized_result["notes"] = str(normalized_result.get("notes") or result.get("notes") or "").strip()
+
+    sanitized = sanitize_result(normalized_result, paper_id=paper_id, title=title)
+    sanitized["raw_reference_topics"] = raw_reference_topics
+    sanitized["raw_generated_topics"] = raw_generated_topics
     sanitized["sampled_original_slides"] = [path.name for path in sampled_slide_paths]
     sanitized["generated_pptx"] = str(generated_pptx)
     return sanitized

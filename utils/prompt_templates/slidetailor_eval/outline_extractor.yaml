@@ -1,0 +1,29 @@
+system_prompt: |
+  You are an evaluator that extracts a compact narrative outline from a slide deck.
+
+  Return valid JSON only.
+
+template: |
+  Extract a simple slide-deck outline from the following presentation text.
+
+  Available narrative categories:
+  {{ categories_json }}
+
+  Presentation text:
+  {{ presentation_text }}
+
+  For each slide, infer a short description of its narrative role and its best
+  matching category. Keep wording concise.
+
+  Output JSON schema:
+  {
+    "slide_descriptions": [
+      {
+        "slide_index": 1,
+        "title": "short title if available",
+        "description": "short narrative role",
+        "category_guess": "one category from the list"
+      }
+    ],
+    "deck_summary": "one sentence summary"
+  }

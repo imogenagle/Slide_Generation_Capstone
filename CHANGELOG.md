@@ -15,6 +15,7 @@ Use this as a shared running log:
 - Added a Streamlit UI layer in `ui/`.
 - Added a Mem0 integration helper in `ui/mem0_store.py`.
 - Added `.env.example` support for the new UI path.
+- Added `Capstone/slidetailor_eval/` as a dedicated home for SlideTailor-derived evaluation code and outputs.
 
 ### Notes
 - This work adds an alternate app-facing interface layer on top of the pipeline. It does not replace the `SlidesAgent` CLI pipeline.

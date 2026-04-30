@@ -51,6 +51,27 @@ def output_key_from_paper_id(paper_id: str | None) -> str | None:
     return key or None
 
 
+def infer_output_key_from_paper_path(paper_path: str) -> str | None:
+    path = Path(paper_path)
+    parts = list(path.parts)
+
+    # Common dataset layout:
+    # .../<split>/<record_id>/paper.pdf
+    if len(parts) >= 3:
+        record_id = parts[-2].strip()
+        split = parts[-3].strip()
+        if record_id.isdigit() and split:
+            split_key = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in split)
+            return f"{split_key}_{record_id}"
+
+    stem = path.stem.replace(" ", "_")
+    if stem.lower() == "paper" and len(parts) >= 2:
+        record_id = parts[-2].strip()
+        if record_id:
+            return record_id
+    return stem or None
+
+
 def append_outline_mode_suffix(paper_name: str, outline_mode: str) -> str:
     base = paper_name.strip().replace(" ", "_")
     if base.endswith("_high_level") or base.endswith("_technical"):
@@ -209,9 +230,7 @@ if __name__ == '__main__':
         target_paper_id = find_target_paper_id(args.paper_path)
         paper_name = output_key_from_paper_id(target_paper_id)
         if paper_name is None:
-            base_name = os.path.basename(args.paper_path)
-            paper_name = os.path.splitext(base_name)[0]
-            paper_name = paper_name.replace(' ', '_')
+            paper_name = infer_output_key_from_paper_path(args.paper_path)
         args.paper_name = append_outline_mode_suffix(paper_name, args.outline_mode)
     else:
         paper_name = append_outline_mode_suffix(args.paper_name, args.outline_mode)

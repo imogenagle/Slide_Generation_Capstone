@@ -634,6 +634,25 @@ def append_outline_mode_suffix(paper_name: str, outline_mode: str) -> str:
         return base
     return f"{base}_{outline_mode}"
 
+
+def infer_output_key_from_paper_path(paper_path: str) -> str | None:
+    path = Path(paper_path)
+    parts = list(path.parts)
+
+    if len(parts) >= 3:
+        record_id = parts[-2].strip()
+        split = parts[-3].strip()
+        if record_id.isdigit() and split:
+            split_key = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in split)
+            return f"{split_key}_{record_id}"
+
+    stem = path.stem.replace(" ", "_")
+    if stem.lower() == "paper" and len(parts) >= 2:
+        record_id = parts[-2].strip()
+        if record_id:
+            return record_id
+    return stem or None
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--paper_name', type=str, default=None)
@@ -660,7 +679,7 @@ if __name__ == '__main__':
     agent_config = get_agent_config(args.model_name_t)
 
     if args.paper_name is None:
-        paper_name = args.paper_path.split('/')[-1].replace('.pdf', '').replace(' ', '_')
+        paper_name = infer_output_key_from_paper_path(args.paper_path)
         args.paper_name = append_outline_mode_suffix(paper_name, args.outline_mode)
     else:
         args.paper_name = append_outline_mode_suffix(args.paper_name, args.outline_mode)

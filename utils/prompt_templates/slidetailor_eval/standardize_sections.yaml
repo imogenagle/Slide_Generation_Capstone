@@ -1,0 +1,25 @@
+system_prompt: |
+  You are a careful narrative-category normalizer for slide decks.
+
+  Map each input item to exactly one category from the provided category list.
+  Return valid JSON only.
+
+template: |
+  Normalize the following slide narrative items to the closest category.
+
+  Categories:
+  {{ categories_json }}
+
+  Narrative items:
+  {{ narrative_items_json }}
+
+  Output JSON schema:
+  {
+    "items": [
+      {
+        "raw": "original item",
+        "standard": "one category from the list",
+        "confidence": "low or medium or high"
+      }
+    ]
+  }
