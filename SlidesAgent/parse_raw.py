@@ -9,7 +9,7 @@ from camel.agents import ChatAgent
 from tenacity import retry, stop_after_attempt
 from docling_core.types.doc import ImageRefMode, PictureItem, TableItem 
  
-from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
+from slidegen_openai_utils import build_openai_client, resolve_direct_model_name, should_use_direct_openai_client
 from docling_core.types.doc.document import BoundingBox
 from docling_core.types.doc.document import CoordOrigin
 from pathlib import Path
@@ -383,7 +383,7 @@ def parse_raw(args, actor_config, version=1):
 
     actor_sys_msg = 'You are the author of the paper, and you will create an academic presentation (slides) to explain the paper'
  
-    if "gpt-5" in args.model_name_t.lower():  
+    if should_use_direct_openai_client(args.model_name_t):  
         client = build_openai_client()
         use_gpt5_responses = True
     
@@ -448,10 +448,13 @@ def parse_raw(args, actor_config, version=1):
 
 
         content_json = get_json_from_response(raw_output)
-
-        if len(content_json) > 0:
+        if (
+            isinstance(content_json, dict)
+            and isinstance(content_json.get("sections"), list)
+            and content_json["sections"]
+        ):
             break
-        print('Error: Empty response, retrying...')
+        print('Error: Invalid outline JSON shape, retrying...')
         if "qwen" in str(args.model_name_t).lower():
             text_content = text_content[:80000]
 

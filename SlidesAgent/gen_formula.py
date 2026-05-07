@@ -16,7 +16,7 @@ from camel.messages import BaseMessage
 import time
 from utils.pptx_utils import *
 from utils.wei_utils import *
-from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
+from slidegen_openai_utils import build_openai_client, resolve_direct_model_name, should_use_direct_openai_client
 
 import pickle as pkl
 import argparse
@@ -75,7 +75,7 @@ def gen_formula_match_v1(args, actor_config, raw_result):
     jinja_env.filters['tojson'] = lambda x: json.dumps(x, ensure_ascii=False)
 
     use_gpt5_responses = False
-    if "gpt-5" in args.model_name_t.lower():  
+    if should_use_direct_openai_client(args.model_name_t):  
         client = build_openai_client()
         use_gpt5_responses = True
     else:

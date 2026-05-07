@@ -107,6 +107,11 @@ def resolve_direct_model_name(model_name: str) -> str:
     return model_name
 
 
+def should_use_direct_openai_client(model_name: Optional[str]) -> bool:
+    normalized = _normalize_model_name(model_name)
+    return "gpt-5" in normalized or azure_openai_supports_model(model_name)
+
+
 def build_openai_client(base_url: Optional[str] = None, api_key: Optional[str] = None):
     if base_url:
         return OpenAI(base_url=base_url, api_key=api_key)
