@@ -148,6 +148,62 @@ The `dev` branch includes experiment helpers in `Capstone/`:
 - `summarize_core_coverage.py`
 - `summarize_evaluation_summaries.py`
 
+### Offline GEPA prompt optimization pilot
+
+GEPA is used only as an offline optimization tool. It is not required for normal
+slide generation.
+
+Install it only in an environment where you want to run the prompt optimizer:
+
+```bash
+python -m pip install gepa
+```
+
+The current pilot optimizes only the hard-coded layout planner system prompt in
+`utils/prompt_templates/layout_agent_xin.yaml`. It expects cached upstream
+artifacts from prior normal pipeline runs under `contents/` and
+`<model_t_model_v>_images_and_tables/`.
+
+Smoke test one seed-prompt evaluation without importing GEPA:
+
+```bash
+python Capstone/gepa_optimize_layout_prompt.py \
+    --paper-limit 1 \
+    --max-metric-calls 1 \
+    --eval-mode plan-only \
+    --evaluate-seed-only
+```
+
+Run a tiny low-cost GEPA pilot:
+
+```bash
+python Capstone/gepa_optimize_layout_prompt.py \
+    --paper-limit 3 \
+    --max-metric-calls 20 \
+    --eval-mode plan-only \
+    --model-name-t 4o-mini \
+    --model-name-v 4o-mini \
+    --reflection-lm direct
+```
+
+Use `--eval-mode full-bundle` only for seed measurement or final validation of a
+small number of reviewed prompts, because it renders PPTX decks and runs the
+full evaluator bundle for every metric call.
+Use `--reflection-lm direct` to route GEPA reflection through this repo's
+configured OpenAI/Azure client instead of LiteLLM.
+
+Runs are written to `Capstone/gepa_runs/layout_agent_xin/<run_id>/`, including
+candidate prompts, per-paper evaluation bundles, score JSON, and
+`best_system_prompt.txt`. Each run also writes `lift_summary.json` with seed
+score, best score, absolute lift, relative lift percentage, and per-metric lift.
+
+After reviewing the winning prompt, promote it into the production YAML:
+
+```bash
+python Capstone/gepa_optimize_layout_prompt.py \
+    --promote-best Capstone/gepa_runs/layout_agent_xin/<run_id>/best_system_prompt.txt
+```
+
 These scripts are part of the capstone workflow and are not part of the original SlideGen release.
 
 ## Interfaces

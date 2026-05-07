@@ -8,7 +8,7 @@ from jinja2 import Environment, StrictUndefined
 from utils.src.utils import   get_json_from_response
 from utils.wei_utils import *
 from utils.pptx_utils import extract_text_from_responses
-from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
+from slidegen_openai_utils import build_openai_client, resolve_direct_model_name, should_use_direct_openai_client
 from camel.models import ModelFactory          
 from camel.agents import ChatAgent     
 from pptx.util import Cm, Pt
@@ -47,7 +47,7 @@ def generate_slide_plan(
     start_time = time.time()
     use_gpt5_responses = False
     cfg = get_agent_config(args.model_name_v)
-    if "gpt-5" in args.model_name_t.lower():  
+    if should_use_direct_openai_client(args.model_name_t):  
         client = build_openai_client()
         use_gpt5_responses = True
     else:

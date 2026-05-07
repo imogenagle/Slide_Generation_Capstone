@@ -12,7 +12,7 @@ from docling_core.types.doc import TextItem
 from camel.models import ModelFactory
 from camel.agents import ChatAgent
 from camel.messages import BaseMessage
-from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
+from slidegen_openai_utils import build_openai_client, resolve_direct_model_name, should_use_direct_openai_client
 from utils.pptx_utils import *
 from utils.wei_utils import * 
 import time
@@ -299,7 +299,7 @@ def filter_image_table(args, filter_config):
 
     use_gpt5_responses = False
 
-    if "gpt-5" in args.model_name_t.lower():  
+    if should_use_direct_openai_client(args.model_name_t):  
         client = build_openai_client()
         use_gpt5_responses = True
     else: 
@@ -379,7 +379,7 @@ def fix_image_captions(args, raw_result, actor_config, filtered_image_informatio
     
     use_gpt5_responses = False
 
-    if "gpt-5" in args.model_name_t.lower():  
+    if should_use_direct_openai_client(args.model_name_t):  
         client = build_openai_client()
         use_gpt5_responses = True
     else:
@@ -549,7 +549,7 @@ def gen_figure_match(args, actor_config, raw_result):
     }
 
     use_gpt5_responses = False
-    if "gpt-5" in args.model_name_t.lower():  
+    if should_use_direct_openai_client(args.model_name_t):  
         client = build_openai_client()
         use_gpt5_responses = True
     else:
