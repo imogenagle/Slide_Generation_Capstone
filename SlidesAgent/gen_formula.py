@@ -9,7 +9,6 @@ from jinja2 import Environment, StrictUndefined
 import base64
 import  re
 from utils.src.utils import ppt_to_images, get_json_from_response
-from docling_core.types.doc import TextItem
 from camel.models import ModelFactory
 from camel.agents import ChatAgent
 from camel.messages import BaseMessage
@@ -253,4 +252,3 @@ def build_formula_json(
         json.dump(results, f, ensure_ascii=False, indent=4)
     print("results",results)
     return results,total_in,total_out,time_taken
-

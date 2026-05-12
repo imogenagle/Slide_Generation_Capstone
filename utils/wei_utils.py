@@ -22,7 +22,6 @@ from playwright.async_api import async_playwright
 import asyncio
 from utils.pptx_utils import *
 from utils.critic_utils import *
-from docling_core.types.doc import TextItem
 from openai import OpenAI
 from slidegen_openai_utils import resolve_model_platform
    
@@ -142,6 +141,8 @@ def chat_via_vllm(prompt,actor_config,actor_model,actor_sys_msg) -> str:
     return resp
         
 def get_page_text(raw_result, page_no): 
+    from docling_core.types.doc import TextItem
+
     texts = [
         item.text
         for item in raw_result.document.texts

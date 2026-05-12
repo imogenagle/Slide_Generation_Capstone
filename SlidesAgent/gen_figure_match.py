@@ -8,7 +8,6 @@ from jinja2 import Environment, StrictUndefined
 import base64
 from utils.pptx_utils import extract_text_from_responses
 from utils.src.utils import ppt_to_images, get_json_from_response
-from docling_core.types.doc import TextItem
 from camel.models import ModelFactory
 from camel.agents import ChatAgent
 from camel.messages import BaseMessage

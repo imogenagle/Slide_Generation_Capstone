@@ -96,8 +96,21 @@ def main() -> None:
     parser.add_argument("--skip-gad", action="store_true")
     parser.add_argument("--skip-aesthetic", action="store_true")
     parser.add_argument("--skip-content", action="store_true")
-    parser.add_argument("--skip-structure", action="store_true")
-    parser.add_argument("--skip-template", action="store_true")
+    parser.add_argument(
+        "--skip-structure",
+        action="store_true",
+        help="Skip SlideTailor preference-based structure similarity. Default behavior is to skip unless explicitly included.",
+    )
+    parser.add_argument(
+        "--skip-template",
+        action="store_true",
+        help="Skip SlideTailor preference-based template similarity. Default behavior is to skip unless explicitly included.",
+    )
+    parser.add_argument(
+        "--include-preference-dependent-slidetailor",
+        action="store_true",
+        help="Include SlideTailor preference-based metrics (structure/template similarity) in this bundle eval.",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -204,7 +217,9 @@ def main() -> None:
         else:
             summary["skipped"]["slidetailor_content_informativeness"] = "Missing source_document."
 
-    if not args.skip_structure:
+    run_preference_dependent_slidetailor = args.include_preference_dependent_slidetailor
+
+    if run_preference_dependent_slidetailor and not args.skip_structure:
         if original_slide_dir and original_slide_dir.exists():
             result = evaluate_structure_similarity(
                 generated_pptx=args.generated_pptx,
@@ -224,8 +239,10 @@ def main() -> None:
             }
         else:
             summary["skipped"]["slidetailor_structure_similarity"] = "Missing original_slide_dir."
+    elif not run_preference_dependent_slidetailor:
+        summary["skipped"]["slidetailor_structure_similarity"] = "Skipped by default: preference-dependent SlideTailor metric."
 
-    if not args.skip_template:
+    if run_preference_dependent_slidetailor and not args.skip_template:
         if args.template_pptx and args.template_pptx.exists():
             template_slide_dir = output_dir / "template_rendered_slides"
             template_slide_images = render_pptx_to_images(args.template_pptx, template_slide_dir, dpi=args.render_dpi)
@@ -246,6 +263,8 @@ def main() -> None:
             }
         else:
             summary["skipped"]["slidetailor_template_similarity"] = "Missing template_pptx."
+    elif not run_preference_dependent_slidetailor:
+        summary["skipped"]["slidetailor_template_similarity"] = "Skipped by default: preference-dependent SlideTailor metric."
 
     write_json(output_dir / "summary.json", summary)
     print(json.dumps(summary, indent=2, ensure_ascii=False))

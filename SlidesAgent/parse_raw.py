@@ -1,26 +1,15 @@
 from dotenv import load_dotenv
 from utils.src.utils import get_json_from_response
-from utils.src.model_utils import parse_pdf
 import json
 import random
 import time
-from camel.models import ModelFactory
-from camel.agents import ChatAgent
 from tenacity import retry, stop_after_attempt
-from docling_core.types.doc import ImageRefMode, PictureItem, TableItem 
- 
 from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
-from docling_core.types.doc.document import BoundingBox
-from docling_core.types.doc.document import CoordOrigin
 from pathlib import Path
+import os
 
 import PIL
 
-from utils.wei_utils import *
-
-from utils.pptx_utils import *
-from utils.critic_utils import *
-import torch
 from jinja2 import Template
 import re
 import argparse    
@@ -43,12 +32,44 @@ def create_model_dict(*args, **kwargs):
 
     return _create_model_dict(*args, **kwargs)
 
+
+def _import_parse_pdf():
+    from utils.src.model_utils import parse_pdf
+
+    return parse_pdf
+
+
+def _import_camel_runtime():
+    from camel.models import ModelFactory
+    from camel.agents import ChatAgent
+
+    return ModelFactory, ChatAgent
+
+
+def _import_wei_utils_helpers():
+    from utils.wei_utils import account_token, chat_via_vllm, get_agent_config, openai_chat_text
+
+    return account_token, chat_via_vllm, get_agent_config, openai_chat_text
+
+
+def _import_torch():
+    import torch
+
+    return torch
+
 def _import_docling():
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
     return InputFormat, PdfPipelineOptions, DocumentConverter, PdfFormatOption
+
+
+def _import_docling_core_types():
+    from docling_core.types.doc import ImageRefMode, TableItem
+    from docling_core.types.doc.document import BoundingBox
+
+    return ImageRefMode, TableItem, BoundingBox
 
 
 def build_converter():
@@ -359,14 +380,20 @@ def parse_raw(args, actor_config, version=1):
     raw_source = args.paper_path
     markdown_clean_pattern = re.compile(r"<!--[\s\S]*?-->")
 
+    print(f"[parse_raw] Starting docling convert for {raw_source}", flush=True)
     raw_result = build_converter().convert(raw_source)
+    print("[parse_raw] Docling convert finished", flush=True)
     input_token, output_token =0,0
     
+    print("[parse_raw] Exporting markdown from docling result", flush=True)
     raw_markdown = raw_result.document.export_to_markdown()
+    print("[parse_raw] Markdown export finished", flush=True)
     text_content = markdown_clean_pattern.sub("", raw_markdown)
     start_time = time.time()
     if len(text_content) < 500:
         print('\nParsing with docling failed, using marker instead\n')
+        torch = _import_torch()
+        parse_pdf = _import_parse_pdf()
         parser_model = create_model_dict(device='cuda', dtype=torch.float16)
         text_content, rendered = parse_pdf(raw_source, model_lst=parser_model, save_file=False)
 
@@ -378,10 +405,18 @@ def parse_raw(args, actor_config, version=1):
     if getattr(args, "use_author_preferences", False):
         profile_path = getattr(args, "author_profile_path", None)
         if profile_path and Path(profile_path).exists():
+            print(f"[parse_raw] Loading author profile from {profile_path}", flush=True)
             author_preference_profile = json.loads(Path(profile_path).read_text(encoding="utf-8"))
+    pair_guideline_context = None
+    if getattr(args, "use_pair_guidelines", False):
+        pair_guidelines_path = getattr(args, "pair_guidelines_path", None)
+        if pair_guidelines_path and Path(pair_guidelines_path).exists():
+            print(f"[parse_raw] Loading pair-guideline context from {pair_guidelines_path}", flush=True)
+            pair_guideline_context = json.loads(Path(pair_guidelines_path).read_text(encoding="utf-8"))
     use_gpt5_responses = False
 
     actor_sys_msg = 'You are the author of the paper, and you will create an academic presentation (slides) to explain the paper'
+    account_token, chat_via_vllm, _get_agent_config, openai_chat_text = _import_wei_utils_helpers()
  
     if "gpt-5" in args.model_name_t.lower():  
         client = build_openai_client()
@@ -390,6 +425,7 @@ def parse_raw(args, actor_config, version=1):
     actor_model = None
     actor_agent = None
     if not use_gpt5_responses:
+        ModelFactory, ChatAgent = _import_camel_runtime()
         if "qwen" in str(args.model_name_t).lower():
             print("model_type=actor_config['model_type']: ", actor_config['model_type'])
             actor_model = ModelFactory.create(
@@ -414,11 +450,18 @@ def parse_raw(args, actor_config, version=1):
 
     while True:
         outline_mode = getattr(args, "outline_mode", "high_level")
+        print(f"[parse_raw] Building prompt (outline_mode={outline_mode})", flush=True)
         prompt = template.render(
             markdown_document=text_content,
             outline_mode=outline_mode,
             use_author_preferences=getattr(args, "use_author_preferences", False),
             author_preference_profile_json=author_preference_profile,
+            use_pair_guidelines=getattr(args, "use_pair_guidelines", False),
+            pair_guidelines_json=pair_guideline_context,
+        )
+        print(
+            f"[parse_raw] Sending outline request to model={args.model_name_t}",
+            flush=True,
         )
         if use_gpt5_responses: 
             raw_output, input_token, output_token = openai_chat_text(
@@ -428,7 +471,7 @@ def parse_raw(args, actor_config, version=1):
                 system_prompt=actor_sys_msg,
                 prefer_responses=True,
             )
-            print("gpt can run")
+            print("[parse_raw] Outline response received", flush=True)
             
         else:
             if "qwen" in str(args.model_name_t).lower():
@@ -444,14 +487,14 @@ def parse_raw(args, actor_config, version=1):
                 response = actor_agent.step(prompt)
                 input_token, output_token = account_token(response)
                 raw_output = response.msgs[0].content
-                print("gpt can run")
+                print("[parse_raw] Outline response received", flush=True)
 
 
         content_json = get_json_from_response(raw_output)
 
         if len(content_json) > 0:
             break
-        print('Error: Empty response, retrying...')
+        print('[parse_raw] Error: Empty response, retrying...', flush=True)
         if "qwen" in str(args.model_name_t).lower():
             text_content = text_content[:80000]
 
@@ -476,8 +519,15 @@ def parse_raw(args, actor_config, version=1):
     end_time = time.time()
     time_taken = end_time - start_time
     os.makedirs(f'contents/{args.paper_name}', exist_ok=True)
-   
-    json.dump(content_json, open(f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_raw_content.json', 'w'), indent=4)
+
+    raw_content_path = (
+        f'contents/{args.paper_name}/'
+        f'<{args.model_name_t}_{args.model_name_v}>_raw_content.json'
+    )
+    print(f"[parse_raw] Writing raw content to {raw_content_path}", flush=True)
+    with open(raw_content_path, "w", encoding="utf-8") as handle:
+        json.dump(content_json, handle, indent=4)
+    print("[parse_raw] Raw parsing stage complete", flush=True)
     return input_token, output_token, time_taken, raw_result
 
 from pprint import pprint
@@ -510,6 +560,7 @@ def convert_bbox_to_pil_coords(bbox, page_width, page_height, pad=10):
     )
   
 def gen_image_and_table(args, conv_res):
+    ImageRefMode, TableItem, BoundingBox = _import_docling_core_types()
     input_token, output_token = 0, 0
     raw_source = args.paper_path
 
@@ -676,6 +727,7 @@ if __name__ == '__main__':
     if args.model_name_v is None:
         args.model_name_v = args.model_name_t
 
+    _account_token, _chat_via_vllm, get_agent_config, _openai_chat_text = _import_wei_utils_helpers()
     agent_config = get_agent_config(args.model_name_t)
 
     if args.paper_name is None:

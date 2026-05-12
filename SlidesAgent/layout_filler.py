@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, List
 import os
 import re
+import math
 from PIL import Image
 from pptx import Presentation
 from pptx.util import Pt
@@ -10,6 +11,7 @@ from pptx.dml.color import RGBColor
 from pptx.dml.color import MSO_THEME_COLOR
 from pptx.enum.text import MSO_AUTO_SIZE
 from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import MSO_ANCHOR
       
 from pprint import pprint
 
@@ -27,6 +29,31 @@ from SlidesAgent.apply_color import *
 COLOR_WHITE = RGBColor(0, 0, 0) 
 THEME_COLOR = RGBColor(185, 210, 153) 
  
+
+TEMPLATE_ID_ALIASES = {
+    "T1_LeftImage": "T3_ImageLeft",
+    "T1_RightImage": "T2_ImageRight",
+    "T4_ImageLeft": "T3_ImageLeft",
+    "T4_ImageRight": "T2_ImageRight",
+    "T3_ImageTop": "T4_ImageTop",
+}
+
+EMU_PER_INCH = 914400
+EMU_PER_PT = 12700
+
+
+def normalize_template_id(template_id: str, layout_names: List[str]) -> str:
+    normalized = TEMPLATE_ID_ALIASES.get(template_id, template_id)
+    if normalized in layout_names:
+        return normalized
+
+    close_match = difflib.get_close_matches(normalized, layout_names, n=1, cutoff=0.88)
+    if close_match:
+        print(f"[layout_filler] normalizing template_id '{template_id}' -> '{close_match[0]}'")
+        return close_match[0]
+
+    return normalized
+
 
 def _insert_picture_keep_ratio(ph, img_path: Path):
     from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -125,18 +152,297 @@ def _enable_shrink_to_fit(text_frame, max_size_pt: float | None = None) -> None:
         return
     text_frame.word_wrap = True
     text_frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+    text_frame.vertical_anchor = MSO_ANCHOR.TOP
     if max_size_pt is not None:
         for paragraph in text_frame.paragraphs:
             _set_paragraph_font_size(paragraph, max_size_pt)
 
 
-def _set_shape_text_with_fit(shape, text: str, max_size_pt: float) -> None:
+def _compact_text_frame(text_frame, margin_pt: float = 3.0) -> None:
+    if text_frame is None:
+        return
+    text_frame.word_wrap = True
+    text_frame.vertical_anchor = MSO_ANCHOR.TOP
+    text_frame.margin_left = Pt(margin_pt)
+    text_frame.margin_right = Pt(margin_pt)
+    text_frame.margin_top = Pt(margin_pt)
+    text_frame.margin_bottom = Pt(margin_pt)
+
+
+def _paragraph_text(paragraph) -> str:
+    if paragraph is None:
+        return ""
+    text = paragraph.text or ""
+    if text:
+        return text
+    return "".join(run.text for run in paragraph.runs if getattr(run, "text", ""))
+
+
+def _paragraph_font_size_pt(paragraph, fallback: float) -> float:
+    if paragraph is None:
+        return fallback
+    if paragraph.font is not None and paragraph.font.size is not None:
+        return max(float(paragraph.font.size.pt), 1.0)
+    for run in paragraph.runs:
+        if run.font is not None and run.font.size is not None:
+            return max(float(run.font.size.pt), 1.0)
+    return fallback
+
+
+def _estimate_wrapped_line_count(text: str, usable_width_pt: float, font_size_pt: float) -> int:
+    text = (text or "").strip()
+    if not text:
+        return 1
+    # Conservative estimate for proportional fonts in PowerPoint.
+    chars_per_line = max(4, int(usable_width_pt / max(font_size_pt * 0.5, 1.0)))
+    line_count = 0
+    for logical_line in text.splitlines() or [""]:
+        line_count += max(1, math.ceil(max(len(logical_line), 1) / chars_per_line))
+    return line_count
+
+
+def _text_frame_fits_estimate(shape, text_frame, min_size_pt: float) -> float:
+    width_pt = max(shape.width / EMU_PER_PT - 2 * 3.0, 24.0)
+    height_pt = max(shape.height / EMU_PER_PT - 2 * 3.0, 24.0)
+    total_height_pt = 0.0
+
+    paragraphs = list(text_frame.paragraphs or [])
+    for idx, paragraph in enumerate(paragraphs):
+        para_text = _paragraph_text(paragraph)
+        font_size_pt = max(_paragraph_font_size_pt(paragraph, min_size_pt), min_size_pt)
+        level = max(int(getattr(paragraph, "level", 0) or 0), 0)
+        indent_penalty_pt = min(level * 18.0, width_pt * 0.45)
+        usable_width_pt = max(width_pt - indent_penalty_pt, 24.0)
+        line_count = _estimate_wrapped_line_count(para_text, usable_width_pt, font_size_pt)
+        line_height_pt = font_size_pt * (1.18 if level == 0 else 1.12)
+        total_height_pt += line_count * line_height_pt
+        if idx < len(paragraphs) - 1:
+            total_height_pt += max(font_size_pt * 0.18, 1.5)
+
+    return total_height_pt - height_pt
+
+
+def _text_frame_fill_ratio(shape, text_frame, min_size_pt: float) -> float:
+    height_pt = max(shape.height / EMU_PER_PT - 2 * 3.0, 24.0)
+    overflow_pt = _text_frame_fits_estimate(shape, text_frame, min_size_pt)
+    content_height_pt = max(0.0, height_pt + overflow_pt)
+    return content_height_pt / height_pt if height_pt > 0 else 1.0
+
+
+def _shrink_text_frame_to_fit(shape, text_frame, min_size_pt: float) -> None:
+    if shape is None or text_frame is None:
+        return
+    original_vertical_anchor = getattr(text_frame, "vertical_anchor", None)
+    original_alignments = [getattr(paragraph, "alignment", None) for paragraph in text_frame.paragraphs]
+    paragraphs = [p for p in text_frame.paragraphs if _paragraph_text(p).strip()]
+    if not paragraphs:
+        _compact_text_frame(text_frame)
+        _enable_shrink_to_fit(text_frame)
+        if original_vertical_anchor is not None:
+            text_frame.vertical_anchor = original_vertical_anchor
+        return
+
+    _compact_text_frame(text_frame)
+    overflow_pt = _text_frame_fits_estimate(shape, text_frame, min_size_pt)
+    if overflow_pt <= 0:
+        _enable_shrink_to_fit(text_frame)
+        if original_vertical_anchor is not None:
+            text_frame.vertical_anchor = original_vertical_anchor
+        for paragraph, alignment in zip(text_frame.paragraphs, original_alignments):
+            paragraph.alignment = alignment
+        return
+
+    current_sizes = [_paragraph_font_size_pt(p, min_size_pt) for p in paragraphs]
+    max_current = max(current_sizes) if current_sizes else min_size_pt
+    trial_size = max_current
+
+    while trial_size > min_size_pt:
+        scale = trial_size / max_current if max_current > 0 else 1.0
+        for paragraph, original_size in zip(paragraphs, current_sizes):
+            _set_paragraph_font_size(paragraph, max(min_size_pt, original_size * scale))
+        if _text_frame_fits_estimate(shape, text_frame, min_size_pt) <= 0:
+            break
+        trial_size -= 1.0
+
+    _enable_shrink_to_fit(text_frame)
+    if original_vertical_anchor is not None:
+        text_frame.vertical_anchor = original_vertical_anchor
+    for paragraph, alignment in zip(text_frame.paragraphs, original_alignments):
+        paragraph.alignment = alignment
+
+
+def _grow_text_frame_to_fill(
+    shape,
+    text_frame,
+    *,
+    min_size_pt: float,
+    max_size_pt: float,
+    target_min_fill: float,
+    target_max_fill: float,
+) -> None:
+    if shape is None or text_frame is None:
+        return
+    original_vertical_anchor = getattr(text_frame, "vertical_anchor", None)
+    original_alignments = [getattr(paragraph, "alignment", None) for paragraph in text_frame.paragraphs]
+    paragraphs = [p for p in text_frame.paragraphs if _paragraph_text(p).strip()]
+    if not paragraphs:
+        return
+
+    current_fill = _text_frame_fill_ratio(shape, text_frame, min_size_pt)
+    if current_fill >= target_min_fill:
+        return
+
+    current_sizes = [_paragraph_font_size_pt(p, min_size_pt) for p in paragraphs]
+    max_current = max(current_sizes) if current_sizes else min_size_pt
+    trial_size = min(max_current + 1.0, max_size_pt)
+    best_sizes = list(current_sizes)
+    best_fill = current_fill
+
+    while trial_size <= max_size_pt:
+        scale = trial_size / max_current if max_current > 0 else 1.0
+        for paragraph, original_size in zip(paragraphs, current_sizes):
+            _set_paragraph_font_size(paragraph, min(max_size_pt, original_size * scale))
+
+        overflow_pt = _text_frame_fits_estimate(shape, text_frame, min_size_pt)
+        fill_ratio = _text_frame_fill_ratio(shape, text_frame, min_size_pt)
+
+        if overflow_pt > 0 or fill_ratio > target_max_fill:
+            break
+
+        best_sizes = [_paragraph_font_size_pt(p, min_size_pt) for p in paragraphs]
+        best_fill = fill_ratio
+        if fill_ratio >= target_min_fill:
+            break
+        trial_size += 1.0
+
+    if best_fill > current_fill:
+        for paragraph, best_size in zip(paragraphs, best_sizes):
+            _set_paragraph_font_size(paragraph, best_size)
+    else:
+        for paragraph, original_size in zip(paragraphs, current_sizes):
+            _set_paragraph_font_size(paragraph, original_size)
+
+    _enable_shrink_to_fit(text_frame)
+    if original_vertical_anchor is not None:
+        text_frame.vertical_anchor = original_vertical_anchor
+    for paragraph, alignment in zip(text_frame.paragraphs, original_alignments):
+        paragraph.alignment = alignment
+
+
+def _shape_rect(shape) -> tuple[int, int, int, int]:
+    return (int(shape.left), int(shape.top), int(shape.left + shape.width), int(shape.top + shape.height))
+
+
+def _rects_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int], padding: int = 0) -> bool:
+    return not (
+        a[2] <= b[0] + padding
+        or a[0] >= b[2] - padding
+        or a[3] <= b[1] + padding
+        or a[1] >= b[3] - padding
+    )
+
+
+def _slide_dimensions(slide) -> tuple[int, int]:
+    prs = slide.part.package.presentation_part.presentation
+    return int(prs.slide_width), int(prs.slide_height)
+
+
+def _text_shapes_with_content(slide):
+    shapes = []
+    for shape in slide.shapes:
+        if not getattr(shape, "has_text_frame", False):
+            continue
+        tf = shape.text_frame
+        if not tf or not any(_paragraph_text(p).strip() for p in tf.paragraphs):
+            continue
+        shapes.append(shape)
+    return shapes
+
+
+def _expand_sparse_slide_pictures(slide) -> None:
+    pictures = [shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    if not pictures:
+        return
+
+    text_shapes = _text_shapes_with_content(slide)
+    text_fill_ratios = []
+    for shape in text_shapes:
+        tf = shape.text_frame
+        min_size_pt = 12.0 if "title" in (getattr(shape, "name", "") or "").lower() else 10.0
+        text_fill_ratios.append(min(_text_frame_fill_ratio(shape, tf, min_size_pt), 1.0))
+
+    avg_text_fill = sum(text_fill_ratios) / len(text_fill_ratios) if text_fill_ratios else 0.0
+    slide_width, slide_height = _slide_dimensions(slide)
+    slide_area = max(slide_width * slide_height, 1)
+    picture_area_ratio = sum(int(p.width) * int(p.height) for p in pictures) / slide_area
+
+    is_sparse = avg_text_fill < 0.42 or picture_area_ratio < 0.18
+    if not is_sparse:
+        return
+
+    slide_margin = int(0.12 * EMU_PER_INCH)
+    blocker_padding = int(0.08 * EMU_PER_INCH)
+
+    for pic in sorted(pictures, key=lambda shp: shp.width * shp.height, reverse=True):
+        center_x = pic.left + pic.width / 2
+        center_y = pic.top + pic.height / 2
+        start_w = int(pic.width)
+        start_h = int(pic.height)
+        best = (int(pic.left), int(pic.top), start_w, start_h)
+        max_scale = 1.75 if len(pictures) == 1 else 1.4
+        scale = 1.05
+
+        while scale <= max_scale:
+            new_w = int(start_w * scale)
+            new_h = int(start_h * scale)
+            new_left = int(center_x - new_w / 2)
+            new_top = int(center_y - new_h / 2)
+            rect = (new_left, new_top, new_left + new_w, new_top + new_h)
+
+            if (
+                rect[0] < slide_margin
+                or rect[1] < slide_margin
+                or rect[2] > slide_width - slide_margin
+                or rect[3] > slide_height - slide_margin
+            ):
+                break
+
+            blocked = False
+            for other in slide.shapes:
+                if other == pic:
+                    continue
+                if other.shape_type == MSO_SHAPE_TYPE.PICTURE or other in text_shapes:
+                    if _rects_overlap(rect, _shape_rect(other), padding=blocker_padding):
+                        blocked = True
+                        break
+            if blocked:
+                break
+
+            best = (new_left, new_top, new_w, new_h)
+            scale += 0.05
+
+        pic.left, pic.top, pic.width, pic.height = best
+
+
+def _set_shape_text_with_fit(
+    shape,
+    text: str,
+    max_size_pt: float,
+    min_size_pt: float = 12.0,
+    alignment=PP_ALIGN.LEFT,
+    vertical_anchor=MSO_ANCHOR.TOP,
+) -> None:
     if shape is None or not getattr(shape, "has_text_frame", False):
         return
     tf = shape.text_frame
     tf.clear()
     tf.paragraphs[0].text = text or ""
+    _compact_text_frame(tf)
     _enable_shrink_to_fit(tf, max_size_pt=max_size_pt)
+    _shrink_text_frame_to_fit(shape, tf, min_size_pt=min_size_pt)
+    tf.vertical_anchor = vertical_anchor
+    for paragraph in tf.paragraphs:
+        paragraph.alignment = alignment
 
 
 def _contents_font_size(section_count: int) -> int:
@@ -192,6 +498,109 @@ def _body_font_sizes(slide_info: Dict) -> tuple[int, int]:
         lvl0 -= 2
         lvl1 -= 2
     return max(lvl0, 16), max(lvl1, 14)
+
+
+def _should_use_top_visual_layout(slide_info: Dict, visual_paths: List[Path]) -> bool:
+    template_id = str(slide_info.get("template_id") or "")
+    if template_id not in {"T2_ImageRight", "T3_ImageLeft"}:
+        return False
+    if len(visual_paths) != 1:
+        return False
+    if slide_info.get("formulas"):
+        return False
+
+    visual_path = visual_paths[0]
+    try:
+        with Image.open(visual_path) as img:
+            width_px, height_px = img.size
+    except Exception:
+        return False
+
+    aspect_ratio = width_px / max(height_px, 1)
+    bullet_count = len(slide_info.get("bullets") or [])
+    sub_count = sum(len(b.get("sub") or []) for b in (slide_info.get("bullets") or []))
+    is_wide_visual = aspect_ratio >= 1.25
+    has_meaningful_text = bullet_count >= 2 or sub_count >= 2
+    return is_wide_visual and has_meaningful_text
+
+
+VISUAL_TEMPLATE_IDS = {
+    "T2_ImageRight",
+    "T3_ImageLeft",
+    "T4_ImageTop",
+    "T5_TwoImages",
+    "T5_TwoImages2",
+    "T7_2x2_TopImage",
+    "T8_2x2_BottomImage",
+    "T9_2x2_AltTextImg",
+    "T10_4Img_2x2Grid",
+    "T11_3Img_TopTextBottom",
+    "T12_3Img_BottomTextTop",
+    "T13_3Img",
+    "T14_ImageRight_1Formula",
+    "T15_ImageLeft_1Formula",
+    "T16_1Img_2formula_TopTextBottom",
+    "T17_2Img_1formula_TopTextBottom",
+    "T18_2formula_TopTextBottom",
+}
+
+
+def _fallback_text_only_template(template_id: str, slide_info: Dict) -> str:
+    if template_id not in VISUAL_TEMPLATE_IDS:
+        return template_id
+    has_requested_visuals = bool(slide_info.get("images") or slide_info.get("tables") or slide_info.get("formulas"))
+    if has_requested_visuals:
+        return template_id
+    return "T1_TextOnly"
+
+
+def _fallback_missing_template_id(
+    template_id: str,
+    slide_info: Dict,
+    visual_paths: List[Path],
+    layout_names: List[str],
+) -> str:
+    if template_id in layout_names:
+        return template_id
+
+    normalized = str(template_id or "")
+    visual_count = len(visual_paths)
+    has_text = bool(slide_info.get("bullets"))
+
+    candidates: list[str] = []
+
+    if "MultiVisual" in normalized or "multi" in normalized.lower():
+        if visual_count >= 2:
+            candidates.extend(["T5_TwoImages2", "T5_TwoImages", "T10_4Img_2x2Grid"])
+        elif visual_count == 1:
+            candidates.extend(["T4_ImageTop", "T2_ImageRight", "T3_ImageLeft"])
+        else:
+            candidates.append("T1_TextOnly")
+
+    if "ImageTop" in normalized:
+        candidates.extend(["T4_ImageTop", "T2_ImageRight", "T3_ImageLeft"])
+    if "ImageRight" in normalized:
+        candidates.extend(["T2_ImageRight", "T4_ImageTop", "T3_ImageLeft"])
+    if "ImageLeft" in normalized:
+        candidates.extend(["T3_ImageLeft", "T4_ImageTop", "T2_ImageRight"])
+
+    if visual_count >= 2:
+        candidates.extend(["T5_TwoImages2", "T5_TwoImages"])
+    elif visual_count == 1:
+        candidates.extend(["T4_ImageTop", "T2_ImageRight", "T3_ImageLeft"])
+    elif not has_text:
+        candidates.append("T1_TextOnly")
+
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate in layout_names:
+            print(f"[layout_filler] fallback template_id '{template_id}' -> '{candidate}'")
+            return candidate
+
+    return template_id
 
 def find_text_placeholders(slide): 
     """Return (part_num_ph, subsection_ph, body_ph) by position."""
@@ -435,6 +844,44 @@ def resolve_visual_paths(slide_info, args):
             f"Existing (first 80):\n{existing}"
         )
 
+    def _fallback_visual_file_by_number(kind: str, raw_id: str, name: str) -> Path | None:
+        norm = _norm_digits(raw_id) or _norm_digits(name)
+        if not norm or not norm.isdigit():
+            return None
+
+        direct_patterns = []
+        if kind == "image":
+            direct_patterns = [
+                f"*-picture-{norm}.png",
+                f"*-{norm}.png",
+                f"image_{int(norm):06d}_*.png",
+                f"image_{norm}.png",
+            ]
+        elif kind == "table":
+            direct_patterns = [
+                f"*-table-{norm}.png",
+                f"table_{norm}.png",
+            ]
+
+        candidates: list[Path] = []
+        artifacts_dir = base_dir / f"{args.paper_name}-with-image-refs_artifacts"
+        for pattern in direct_patterns:
+            candidates.extend(sorted(base_dir.glob(pattern)))
+            if artifacts_dir.exists():
+                candidates.extend(sorted(artifacts_dir.glob(pattern)))
+            candidates.extend(sorted(base_dir.glob(f"**/{pattern}")))
+
+        deduped: list[Path] = []
+        seen = set()
+        for path in candidates:
+            key = str(path.resolve())
+            if key in seen or not path.exists():
+                continue
+            seen.add(key)
+            deduped.append(path)
+
+        return deduped[0] if deduped else None
+
     def _dedupe_paths(paths):
         seen = set()
         deduped = []
@@ -490,13 +937,18 @@ def resolve_visual_paths(slide_info, args):
         img_id = m.group(1) if m else _norm_digits(name)
 
        
-        rec, used_key = _match_by_id_or_caption(img_id, name, images_json, fignum_to_imgkeys, kind="image")
-
-        target = rec.get("image_path") or rec.get("path") or rec.get("file")
-        if not target:
-            raise KeyError(f"Image record has no path field. key={used_key}, record={rec}")
-
-        img_path = _resolve_and_check(Path(target))
+        try:
+            rec, used_key = _match_by_id_or_caption(img_id, name, images_json, fignum_to_imgkeys, kind="image")
+            target = rec.get("image_path") or rec.get("path") or rec.get("file")
+            if not target:
+                raise KeyError(f"Image record has no path field. key={used_key}, record={rec}")
+            img_path = _resolve_and_check(Path(target))
+        except KeyError:
+            fallback = _fallback_visual_file_by_number("image", img_id, name)
+            if fallback is None:
+                raise
+            print(f"[layout_filler] fallback image match for '{name}' -> '{fallback.name}'")
+            img_path = fallback
         image_paths.append(img_path)
 
     # ----------------- tables -----------------
@@ -506,13 +958,19 @@ def resolve_visual_paths(slide_info, args):
         m = re.search(r'(?:table|tab|picture|image|fig|formula)[-_](\d+)(?=\.[A-Za-z0-9]+$)', name, re.I)
         tb_id = m.group(1) if m else _norm_digits(name)
 
-        rec, used_key = _match_by_id_or_caption(tb_id, name, tables_json, tbnum_to_tbkeys, kind="table")
-
-        target = rec.get("table_path") or rec.get("image_path") or rec.get("path") or rec.get("file")
-        if not target:
-            raise KeyError(f"Table record has no path field. key={used_key}, record={rec}")
-
-        tb_path = _resolve_and_check(Path(target))
+        try:
+            rec, used_key = _match_by_id_or_caption(tb_id, name, tables_json, tbnum_to_tbkeys, kind="table")
+            target = rec.get("table_path") or rec.get("image_path") or rec.get("path") or rec.get("file")
+            if not target:
+                raise KeyError(f"Table record has no path field. key={used_key}, record={rec}")
+            tb_path = _resolve_and_check(Path(target))
+        except KeyError:
+            fallback = _fallback_visual_file_by_number("table", tb_id, name)
+            if fallback is None:
+                print(f"[layout_filler] skipping missing table asset: {name}")
+                continue
+            print(f"[layout_filler] fallback table match for '{name}' -> '{fallback.name}'")
+            tb_path = fallback
         table_paths.append(tb_path)
 
     # ----------------- formulas -----------------
@@ -521,8 +979,20 @@ def resolve_visual_paths(slide_info, args):
         if args.formula_mode == 3:
             final_path = formulas_dir / fname
         else: 
-            final_path = Path(resolve_formula_mode1_path(fname, args))
-        formula_paths.append(_resolve_and_check(Path(final_path)))
+            resolved_formula_path = resolve_formula_mode1_path(fname, args)
+            if resolved_formula_path is None:
+                print(f"[layout_filler] skipping non-asset formula entry: {fname}")
+                continue
+            final_path = Path(resolved_formula_path)
+        try:
+            formula_paths.append(_resolve_and_check(Path(final_path)))
+        except FileNotFoundError:
+            fallback = _fallback_visual_file_by_number("image", _norm_digits(fname), fname)
+            if fallback is not None:
+                print(f"[layout_filler] fallback formula match for '{fname}' -> '{fallback.name}'")
+                formula_paths.append(fallback)
+            else:
+                print(f"[layout_filler] skipping missing formula asset: {fname}")
     print("formula_paths",formula_paths)
     return _dedupe_paths(image_paths + table_paths + formula_paths)
 
@@ -684,7 +1154,7 @@ def resolve_formula_mode1_path(fname: str, args) -> Path:
     match = re.search(r'(\d+)(?!.*\d)', stem) 
     # match = re.search(r'(?i)\bformula(?:[_\-\s]*)?(\d+)\b', stem)
     if not match:
-        raise ValueError(f"Cannot extract index from formula filename: {fname}")
+        return None
     
     i = match.group(1)
     path_str = f"<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/{args.paper_name}-formula-{i}.png"
@@ -703,6 +1173,31 @@ def _is_T1_textonly(s: Dict[str, Any]) -> bool:
         and not s.get("formulas")
     )
 
+
+def _bullet_text_length(slide: Dict[str, Any]) -> int:
+    total = 0
+    for bullet in slide.get("bullets") or []:
+        total += len((bullet.get("text") or "").strip())
+        total += sum(len(str(sub).strip()) for sub in (bullet.get("sub") or []))
+    return total
+
+
+def _should_merge_T1_pair(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    left_bullets = left.get("bullets") or []
+    right_bullets = right.get("bullets") or []
+    left_subsection = (left.get("subsection") or "").strip()
+    right_subsection = (right.get("subsection") or "").strip()
+    left_len = _bullet_text_length(left)
+    right_len = _bullet_text_length(right)
+
+    if not left_subsection or not right_subsection:
+        return False
+    if len(left_bullets) < 2 or len(right_bullets) < 2:
+        return False
+    if left_len < 120 or right_len < 120:
+        return False
+    return True
+
 def pair_T1_to_T19(plan_path: str, write_back: bool = True) -> int:
  
     p = Path(plan_path)
@@ -718,6 +1213,7 @@ def pair_T1_to_T19(plan_path: str, write_back: bool = True) -> int:
             and _is_T1_textonly(cur)
             and _is_T1_textonly(slides[i + 1])
             and cur.get("section") == slides[i + 1].get("section")
+            and _should_merge_T1_pair(cur, slides[i + 1])
         ):
             left, right = cur, slides[i + 1]
             out.append({
@@ -769,9 +1265,26 @@ def _clear_text_frame(tf):
     else:
         tf.clear()
 
-def _fill_bullets(tf, bullets, lvl0_size=24, lvl1_size=24):
+def _fill_bullets(
+    shape_or_tf,
+    bullets,
+    lvl0_size=24,
+    lvl1_size=24,
+    min_size_pt: float = 10.0,
+    max_size_pt: float | None = None,
+    target_min_fill: float = 0.46,
+    target_max_fill: float = 0.82,
+):
+    if getattr(shape_or_tf, "has_text_frame", False):
+        shape = shape_or_tf
+        tf = shape.text_frame
+    else:
+        shape = None
+        tf = shape_or_tf
+    if max_size_pt is None:
+        max_size_pt = min(max(lvl0_size, lvl1_size) + 4.0, 28.0)
     _clear_text_frame(tf)
-    tf.word_wrap = True
+    _compact_text_frame(tf)
     for b in (bullets or []):
         p = tf.paragraphs[0] if len(tf.paragraphs) == 1 and not tf.paragraphs[0].text else tf.add_paragraph()
         p.text = (b.get("text") or "").strip()
@@ -784,6 +1297,29 @@ def _fill_bullets(tf, bullets, lvl0_size=24, lvl1_size=24):
             sp.level = 1
             _set_paragraph_font_size(sp, lvl1_size)
     _enable_shrink_to_fit(tf)
+    if shape is not None:
+        _shrink_text_frame_to_fit(shape, tf, min_size_pt=min_size_pt)
+        _grow_text_frame_to_fill(
+            shape,
+            tf,
+            min_size_pt=min_size_pt,
+            max_size_pt=max_size_pt,
+            target_min_fill=target_min_fill,
+            target_max_fill=target_max_fill,
+        )
+
+
+def _stabilize_slide_text_shapes(slide) -> None:
+    for shape in slide.shapes:
+        if not getattr(shape, "has_text_frame", False):
+            continue
+        tf = shape.text_frame
+        if not tf or not any(_paragraph_text(p).strip() for p in tf.paragraphs):
+            continue
+        name = (getattr(shape, "name", "") or "").lower()
+        min_size_pt = 12.0 if "title" in name else 10.0
+        _shrink_text_frame_to_fit(shape, tf, min_size_pt=min_size_pt)
+    _expand_sparse_slide_pictures(slide)
 from pptx.enum.shapes import PP_PLACEHOLDER
 
 def _get_placeholder(slide, name): 
@@ -870,10 +1406,10 @@ def fill_T19_2Text(slide, slide_info, section_no_text):
         _set_shape_text_with_fit(rt, right.get("subsection", "") or right.get("title", "") or "", max_size_pt=22)
 
     if lb is not None and getattr(lb, "has_text_frame", False):
-        _fill_bullets(lb.text_frame, left.get("bullets"))
+        _fill_bullets(lb, left.get("bullets"))
 
     if rb is not None and getattr(rb, "has_text_frame", False):
-        _fill_bullets(rb.text_frame, right.get("bullets"))
+        _fill_bullets(rb, right.get("bullets"))
 
      
     missing = []
@@ -919,7 +1455,11 @@ def generate_pptx_from_plan(
     with open(figs_json_path, encoding="utf-8") as f: figs_data   = json.load(f)
     with open(formula_json_path, encoding="utf-8") as f: formula_data   = json.load(f)
     
-    variant_suffix = "_personalized" if getattr(args, "use_author_preferences", False) else "_baseline"
+    variant_suffix = getattr(
+        args,
+        "output_variant_suffix",
+        "_personalized" if getattr(args, "use_author_preferences", False) else "_baseline",
+    )
     plan_json = f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_slide_plan{variant_suffix}.json'
      
     made = pair_T1_to_T19(plan_json)   
@@ -946,8 +1486,22 @@ def generate_pptx_from_plan(
     cover_layout = prs.slide_layouts.get_by_name("Title Slide")
     cover = prs.slides.add_slide(cover_layout)
 
-    _set_shape_text_with_fit(_placeholder_by_name(cover, "Title 1"), title, max_size_pt=32)
-    _set_shape_text_with_fit(_placeholder_by_name(cover, "Subtitle 2"), subtitle, max_size_pt=20)
+    _set_shape_text_with_fit(
+        _placeholder_by_name(cover, "Title 1"),
+        title,
+        max_size_pt=34,
+        min_size_pt=18,
+        alignment=PP_ALIGN.CENTER,
+        vertical_anchor=MSO_ANCHOR.MIDDLE,
+    )
+    _set_shape_text_with_fit(
+        _placeholder_by_name(cover, "Subtitle 2"),
+        subtitle,
+        max_size_pt=22,
+        min_size_pt=14,
+        alignment=PP_ALIGN.CENTER,
+        vertical_anchor=MSO_ANCHOR.MIDDLE,
+    )
 
     # ---------- Contents ----------
     outline_layout = prs.slide_layouts.get_by_name("Mulu")
@@ -981,10 +1535,32 @@ def generate_pptx_from_plan(
             sec_slide = prs.slides.add_slide(section_layout)
             for shape in sec_slide.shapes:
                 print(f"Shape: {shape.name}")
-            _set_shape_text_with_fit(_placeholder_by_name(sec_slide, "Text Placeholder 2"), f"PART {section_counter:02d}", max_size_pt=36)
-            _set_shape_text_with_fit(_placeholder_by_name(sec_slide, "Title 1"), current_section, max_size_pt=34)
+            _set_shape_text_with_fit(
+                _placeholder_by_name(sec_slide, "Text Placeholder 2"),
+                f"PART {section_counter:02d}",
+                max_size_pt=38,
+                min_size_pt=18,
+                alignment=PP_ALIGN.CENTER,
+                vertical_anchor=MSO_ANCHOR.MIDDLE,
+            )
+            _set_shape_text_with_fit(
+                _placeholder_by_name(sec_slide, "Title 1"),
+                current_section,
+                max_size_pt=36,
+                min_size_pt=18,
+                alignment=PP_ALIGN.CENTER,
+                vertical_anchor=MSO_ANCHOR.MIDDLE,
+            )
   
-        template_id = slide_info["template_id"]
+        visuals = resolve_visual_paths(slide_info, args)
+        layout_names = [layout.name for layout in prs.slide_layouts]
+        template_id = str(slide_info["template_id"])
+        template_id = _fallback_text_only_template(template_id, slide_info)
+        if _should_use_top_visual_layout(slide_info, visuals):
+            template_id = "T4_ImageTop"
+        template_id = normalize_template_id(template_id, layout_names)
+        template_id = _fallback_missing_template_id(template_id, slide_info, visuals, layout_names)
+        slide_info["template_id"] = template_id
         layout = prs.slide_layouts.get_by_name(template_id)
           
         if layout is None:
@@ -1027,10 +1603,20 @@ def generate_pptx_from_plan(
                     sp.text, sp.level = sub, 1
                     _set_paragraph_font_size(sp, lvl1_size)
             _enable_shrink_to_fit(tf)
+            _shrink_text_frame_to_fit(body_ph, tf, min_size_pt=10.0)
+            has_visuals = bool(slide_info.get("images") or slide_info.get("tables") or slide_info.get("formulas"))
+            _grow_text_frame_to_fill(
+                body_ph,
+                tf,
+                min_size_pt=10.0,
+                max_size_pt=30.0 if not has_visuals else 26.0,
+                target_min_fill=0.58 if not has_visuals else 0.46,
+                target_max_fill=0.86 if not has_visuals else 0.82,
+            )
          
          
-        visuals = resolve_visual_paths(slide_info, args)
         insert_visuals_auto(slide, visuals)
+        _stabilize_slide_text_shapes(slide)
  
 
         # ---------- note ----------
@@ -1065,10 +1651,19 @@ def generate_pptx_from_plan(
     thanks_layout = prs.slide_layouts.get_by_name("Last_page")
     thanks = prs.slides.add_slide(thanks_layout)
     title_ph = _placeholder_by_name(thanks, "Title 1")
-    _set_shape_text_with_fit(title_ph, "THANKS!", max_size_pt=28)
+    _set_shape_text_with_fit(
+        title_ph,
+        "THANKS!",
+        max_size_pt=42,
+        min_size_pt=20,
+        alignment=PP_ALIGN.CENTER,
+        vertical_anchor=MSO_ANCHOR.MIDDLE,
+    )
  
     run = title_ph.text_frame.paragraphs[0].runs[0]
     run.font.bold = True
+    for slide in prs.slides:
+        _stabilize_slide_text_shapes(slide)
     output_pptx = (
         f'contents/{args.paper_name}/'
         f'{args.model_name_t}_{args.model_name_v}_output_slides{variant_suffix}.pptx'

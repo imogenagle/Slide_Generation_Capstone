@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
     from SlideGen.Capstone.slidetailor_eval.common import (
         DEFAULT_MAX_VISION_IMAGES,
         REPO_ROOT,
+        _normalize_score,
         add_shared_args,
         call_json_judge,
         collect_slide_images,
@@ -27,6 +28,7 @@ else:
     from .common import (
         DEFAULT_MAX_VISION_IMAGES,
         REPO_ROOT,
+        _normalize_score,
         add_shared_args,
         call_json_judge,
         collect_slide_images,
@@ -75,7 +77,7 @@ def evaluate_template_similarity(
         "source": "SlideTailor-derived",
         "metric": "template_similarity",
         "generated_pptx": str(generated_pptx),
-        "score": max(0.0, min(1.0, float(response.get("score", 0.0)))),
+        "score": _normalize_score(response.get("score", 0.0)),
         "reason": str(response.get("reason", "")).strip(),
         "generated_slide_count": len(generated_slide_images),
         "template_slide_count": len(template_slide_images),

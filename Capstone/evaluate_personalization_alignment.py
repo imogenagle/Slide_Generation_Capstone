@@ -247,17 +247,23 @@ def build_numeric_target_summary(author_profile: dict[str, Any]) -> dict[str, An
     if not numeric:
         return {}
 
-    avg_text_density_proxy = float(numeric.get("avg_text_density_proxy", 0.0) or 0.0)
-    text_density_proxy_std = float(numeric.get("text_density_proxy_std", 0.0) or 0.0)
+    summary = {key: value for key, value in numeric.items() if value not in (None, [], {}, "")}
 
-    return {
-        "avg_text_density_proxy": avg_text_density_proxy,
-        "text_density_proxy_std": text_density_proxy_std,
-        "text_density_proxy_target_range": [
+    avg_text_density_proxy = numeric.get("target_avg_text_density_proxy", numeric.get("avg_text_density_proxy"))
+    text_density_proxy_std = numeric.get("text_density_proxy_std")
+    if avg_text_density_proxy is not None:
+        avg_text_density_proxy = float(avg_text_density_proxy or 0.0)
+        summary["target_avg_text_density_proxy"] = avg_text_density_proxy
+    if text_density_proxy_std is not None:
+        text_density_proxy_std = float(text_density_proxy_std or 0.0)
+        summary["text_density_proxy_std"] = text_density_proxy_std
+    if avg_text_density_proxy is not None and text_density_proxy_std is not None:
+        summary["text_density_proxy_target_range"] = [
             round(max(0.0, avg_text_density_proxy - text_density_proxy_std), 4),
             round(avg_text_density_proxy + text_density_proxy_std, 4),
-        ],
-    }
+        ]
+
+    return summary
 
 
 def build_numeric_comparison(
