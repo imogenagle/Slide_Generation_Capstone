@@ -173,8 +173,17 @@ def summarize_slide_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "figure_usage_estimate": classify_level(sum(figure_flags) / slide_count, 0.2, 0.55) if slide_count else "unknown",
         "table_usage_estimate": classify_level(sum(table_flags) / slide_count, 0.08, 0.22) if slide_count else "unknown",
         "formula_usage_estimate": classify_level(sum(formula_flags) / slide_count, 0.08, 0.22) if slide_count else "unknown",
+        "figure_slide_fraction": round(sum(figure_flags) / slide_count, 4) if slide_count else 0.0,
+        "table_slide_fraction": round(sum(table_flags) / slide_count, 4) if slide_count else 0.0,
+        "formula_slide_fraction": round(sum(formula_flags) / slide_count, 4) if slide_count else 0.0,
         "layout_bias_observed": [key for key, count in layout_bias_counts.items() if count > 0],
         "layout_bias_counts": layout_bias_counts,
+        "text_only_fraction": round(layout_bias_counts["text_only"] / slide_count, 4) if slide_count else 0.0,
+        "multi_visual_fraction": round(layout_bias_counts["multi_visual"] / slide_count, 4) if slide_count else 0.0,
+        "formula_capable_fraction": round(layout_bias_counts["formula_capable"] / slide_count, 4) if slide_count else 0.0,
+        "image_right_fraction": round(layout_bias_counts["image_right"] / slide_count, 4) if slide_count else 0.0,
+        "image_left_fraction": round(layout_bias_counts["image_left"] / slide_count, 4) if slide_count else 0.0,
+        "image_top_fraction": round(layout_bias_counts["image_top"] / slide_count, 4) if slide_count else 0.0,
         "prefers_takeaway_like_close": any(
             "conclusion" in title.lower() or "takeaway" in title.lower() or "future" in title.lower()
             for title in section_order
@@ -274,7 +283,52 @@ def build_numeric_comparison(
     if not target_summary:
         return {}
 
-    return {}
+    metric_specs = {
+        "slide_count": ("target_slide_count", "slide_count"),
+        "avg_slides_per_section": ("target_avg_slides_per_section", "avg_slides_per_section"),
+        "avg_bullets_per_slide": ("target_avg_bullets_per_slide", "avg_bullets_per_slide"),
+        "avg_words_per_slide": ("target_avg_words_per_slide", "avg_words_per_slide"),
+        "figure_slide_fraction": ("target_fraction_figure_slides", "figure_slide_fraction"),
+        "table_slide_fraction": ("target_fraction_table_slides", "table_slide_fraction"),
+        "formula_slide_fraction": ("target_fraction_formula_slides", "formula_slide_fraction"),
+        "text_only_fraction": ("target_fraction_text_only_slides", "text_only_fraction"),
+        "multi_visual_fraction": ("target_fraction_multi_visual_slides", "multi_visual_fraction"),
+        "formula_capable_fraction": ("target_fraction_formula_capable_slides", "formula_capable_fraction"),
+        "image_right_fraction": ("target_fraction_image_right_slides", "image_right_fraction"),
+        "image_left_fraction": ("target_fraction_image_left_slides", "image_left_fraction"),
+        "image_top_fraction": ("target_fraction_image_top_slides", "image_top_fraction"),
+    }
+
+    comparison: dict[str, Any] = {}
+    for output_key, (target_key, summary_key) in metric_specs.items():
+        if target_key not in target_summary:
+            continue
+        try:
+            target_value = float(target_summary[target_key])
+            baseline_value = float(baseline_summary.get(summary_key, 0.0))
+            personalized_value = float(personalized_summary.get(summary_key, 0.0))
+        except Exception:
+            continue
+
+        baseline_distance = abs(baseline_value - target_value)
+        personalized_distance = abs(personalized_value - target_value)
+        if abs(baseline_distance - personalized_distance) <= 1e-6:
+            closer = "tie"
+        elif personalized_distance < baseline_distance:
+            closer = "personalized"
+        else:
+            closer = "baseline"
+
+        comparison[output_key] = {
+            "target": round(target_value, 4),
+            "baseline": round(baseline_value, 4),
+            "personalized": round(personalized_value, 4),
+            "baseline_distance": round(baseline_distance, 4),
+            "personalized_distance": round(personalized_distance, 4),
+            "closer_to_target": closer,
+        }
+
+    return comparison
 
 
 def render_prompt(

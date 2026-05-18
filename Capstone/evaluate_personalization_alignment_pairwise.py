@@ -31,6 +31,44 @@ from Capstone.evaluate_personalization_alignment import (
 
 DEFAULT_PROMPT_PATH = REPO_ROOT / "utils" / "prompt_templates" / "personalization_alignment_evaluator_pairwise.yaml"
 
+DETERMINISTIC_DIMENSION_SPECS = {
+    "bullet_density_alignment": {
+        "summary_key": "avg_bullets_per_slide",
+        "target_key": "target_avg_bullets_per_slide",
+        "tie_threshold": 0.05,
+        "normalizer_floor": 0.5,
+        "label": "avg bullets/slide",
+    },
+    "text_density_alignment": {
+        "summary_key": "avg_words_per_slide",
+        "target_key": "target_avg_words_per_slide",
+        "tie_threshold": 0.25,
+        "normalizer_floor": 2.0,
+        "label": "avg words/slide",
+    },
+    "figure_usage_alignment": {
+        "summary_key": "figure_slide_fraction",
+        "target_key": "target_fraction_figure_slides",
+        "tie_threshold": 0.015,
+        "normalizer_floor": 0.05,
+        "label": "figure-slide fraction",
+    },
+    "table_usage_alignment": {
+        "summary_key": "table_slide_fraction",
+        "target_key": "target_fraction_table_slides",
+        "tie_threshold": 0.015,
+        "normalizer_floor": 0.05,
+        "label": "table-slide fraction",
+    },
+    "formula_usage_alignment": {
+        "summary_key": "formula_slide_fraction",
+        "target_key": "target_fraction_formula_slides",
+        "tie_threshold": 0.015,
+        "normalizer_floor": 0.05,
+        "label": "formula-slide fraction",
+    },
+}
+
 
 def render_prompt(
     prompt_path: Path,
@@ -87,8 +125,102 @@ def coerce_pairwise_report(report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
+def compute_deterministic_dimension_results(
+    author_profile: dict[str, Any],
+    baseline_summary: dict[str, Any],
+    personalized_summary: dict[str, Any],
+    applicable_dimensions: list[str],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
+    target_summary = build_numeric_target_summary(author_profile)
+    deterministic_results: dict[str, dict[str, Any]] = {}
+    diagnostics: dict[str, dict[str, Any]] = {}
+    basis: dict[str, str] = {}
+
+    for metric_key, spec in DETERMINISTIC_DIMENSION_SPECS.items():
+        if metric_key not in applicable_dimensions:
+            continue
+        target_key = spec["target_key"]
+        summary_key = spec["summary_key"]
+        if target_key not in target_summary:
+            continue
+        try:
+            target_value = float(target_summary[target_key])
+            baseline_value = float(baseline_summary.get(summary_key, 0.0))
+            personalized_value = float(personalized_summary.get(summary_key, 0.0))
+        except Exception:
+            continue
+
+        baseline_distance = abs(baseline_value - target_value)
+        personalized_distance = abs(personalized_value - target_value)
+        distance_gap = baseline_distance - personalized_distance
+        if abs(distance_gap) <= float(spec["tie_threshold"]):
+            winner = "tie"
+            lift_value = 0.0
+        else:
+            winner = "personalized" if distance_gap > 0 else "baseline"
+            normalizer = max(
+                baseline_distance,
+                personalized_distance,
+                float(spec["normalizer_floor"]),
+            )
+            lift_value = max(-1.0, min(1.0, distance_gap / normalizer))
+
+        label = str(spec["label"])
+        rationale = (
+            f"Target {label} is {target_value:.4f}; personalized is {personalized_value:.4f} "
+            f"(distance {personalized_distance:.4f}) and baseline is {baseline_value:.4f} "
+            f"(distance {baseline_distance:.4f})."
+        )
+        if winner == "tie":
+            rationale += " The difference in target distance is negligible, so this dimension is treated as a tie."
+        else:
+            rationale += f" {winner.capitalize()} is closer to the target on this measurable dimension."
+
+        deterministic_results[metric_key] = {
+            "winner": winner,
+            "lift": round(lift_value, 4),
+            "rationale": rationale,
+        }
+        diagnostics[metric_key] = {
+            "target": round(target_value, 4),
+            "baseline": round(baseline_value, 4),
+            "personalized": round(personalized_value, 4),
+            "baseline_distance": round(baseline_distance, 4),
+            "personalized_distance": round(personalized_distance, 4),
+        }
+        basis[metric_key] = "deterministic_target_distance"
+
+    return deterministic_results, diagnostics, basis
+
+
+def build_pairwise_headline(
+    winner: str,
+    applicable_dimensions: list[str],
+    dimensions: dict[str, dict[str, Any]],
+) -> str:
+    applicable = [key for key in applicable_dimensions if key != "overall_style_alignment"]
+    if not applicable:
+        return "No applicable dimensions were available for pairwise personalization evaluation."
+
+    if winner == "tie":
+        return "Baseline and personalized split the applicable dimensions closely in the pairwise profile comparison."
+
+    winning_dims = [
+        (key, abs(float((dimensions.get(key) or {}).get("lift", 0.0))))
+        for key in applicable
+        if str((dimensions.get(key) or {}).get("winner", "tie")) == winner
+    ]
+    winning_dims.sort(key=lambda item: item[1], reverse=True)
+    top_dims = ", ".join(key for key, _ in winning_dims[:2]) or "the applicable dimensions"
+    subject = "Personalized" if winner == "personalized" else "Baseline"
+    return f"{subject} wins the pairwise profile comparison overall, with its clearest edge on {top_dims}."
+
+
 def apply_pairwise_applicability(
     report: dict[str, Any],
+    author_profile: dict[str, Any],
+    baseline_summary: dict[str, Any],
+    personalized_summary: dict[str, Any],
     extracted_asset_summary: dict[str, Any],
 ) -> dict[str, Any]:
     placeholder = {
@@ -109,31 +241,60 @@ def apply_pairwise_applicability(
         dim["rationale"] = "Skipped from comparison because the target paper did not expose supporting extracted assets for this dimension."
 
     report = coerce_pairwise_report(report)
-    overall_components = [float(report["lift"][key]) for key in applicable if key != "overall_style_alignment"]
-    report["lift"]["overall_style_alignment"] = round(sum(overall_components) / len(overall_components), 4) if overall_components else 0.0
+    deterministic_results, deterministic_diagnostics, deterministic_basis = compute_deterministic_dimension_results(
+        author_profile,
+        baseline_summary,
+        personalized_summary,
+        applicable,
+    )
+    dimensions = report.setdefault("dimensions", {})
+    for metric_key, result in deterministic_results.items():
+        dimensions[metric_key] = result
+    report = coerce_pairwise_report(report)
 
-    overall_delta = float(report["lift"]["overall_style_alignment"])
-    winner = "tie"
-    if overall_delta > 0.03:
+    applicable_no_overall = [key for key in applicable if key != "overall_style_alignment"]
+    personalized_wins = sum(
+        1 for key in applicable_no_overall
+        if str((dimensions.get(key) or {}).get("winner", "tie")) == "personalized"
+    )
+    baseline_wins = sum(
+        1 for key in applicable_no_overall
+        if str((dimensions.get(key) or {}).get("winner", "tie")) == "baseline"
+    )
+    tie_count = len(applicable_no_overall) - personalized_wins - baseline_wins
+    total_count = max(1, len(applicable_no_overall))
+
+    overall_delta = round((personalized_wins - baseline_wins) / total_count, 4)
+    report["lift"]["overall_style_alignment"] = overall_delta
+    if overall_delta > 0:
         winner = "personalized"
-    elif overall_delta < -0.03:
+    elif overall_delta < 0:
         winner = "baseline"
+    else:
+        winner = "tie"
 
     summary = report.setdefault("summary", {})
     summary["winner"] = winner
-    if not summary.get("headline"):
-        if winner == "personalized":
-            summary["headline"] = "Personalized matches the profile better overall in the pairwise comparison."
-        elif winner == "baseline":
-            summary["headline"] = "Baseline matches the profile better overall in the pairwise comparison."
-        else:
-            summary["headline"] = "Baseline and personalized are roughly tied in the pairwise comparison."
-    if summary.get("confidence") not in {"low", "medium", "high"}:
-        magnitude = abs(overall_delta)
-        summary["confidence"] = "high" if magnitude >= 0.2 else "medium" if magnitude >= 0.08 else "low"
+    summary["headline"] = build_pairwise_headline(winner, applicable, dimensions)
+    magnitude = abs(overall_delta)
+    summary["confidence"] = "high" if magnitude >= 0.5 else "medium" if magnitude >= 0.2 else "low"
+    summary["win_counts"] = {
+        "personalized": personalized_wins,
+        "baseline": baseline_wins,
+        "tie": tie_count,
+        "applicable": len(applicable_no_overall),
+    }
+    summary["personalized_win_rate"] = round(personalized_wins / total_count, 4)
+    summary["baseline_win_rate"] = round(baseline_wins / total_count, 4)
 
     report["applicable_dimensions"] = applicable
     report["skipped_dimensions"] = skipped
+    report["dimension_score_basis"] = {
+        key: deterministic_basis.get(key, "llm_pairwise_judgment")
+        for key in SCORE_KEYS
+    }
+    if deterministic_diagnostics:
+        report["deterministic_target_distance_diagnostics"] = deterministic_diagnostics
     return report
 
 
@@ -186,7 +347,13 @@ def main() -> None:
         request_timeout=args.request_timeout,
         verbose=args.verbose,
     )
-    report = apply_pairwise_applicability(report, extracted_asset_summary)
+    report = apply_pairwise_applicability(
+        report,
+        author_profile,
+        baseline_summary,
+        personalized_summary,
+        extracted_asset_summary,
+    )
 
     numeric_target_summary = build_numeric_target_summary(author_profile)
     numeric_comparison = build_numeric_comparison(
