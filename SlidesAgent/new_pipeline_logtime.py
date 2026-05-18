@@ -215,21 +215,8 @@ if __name__ == '__main__':
     parser.add_argument('--force_refresh_preferences', action='store_true',
                         help='Regenerate the author profile even if a cached profile JSON already exists.')
     parser.add_argument('--template_path', type=str, default=None,
-                        help='Path to a user-supplied PPTX template. If omitted, uses the default slides3_template.pptx.')
-    parser.add_argument('--force_replan', action='store_true',
-                        help='Branch B only: regenerate the slide plan even if _slide_plan.json is cached.')
+                        help='Path to a user-supplied PPTX template. SlideGen runs as normal, then the layout binder maps the plan onto this template. If omitted, uses the default slides3_template.pptx via generate_pptx_from_plan.')
     args = parser.parse_args()
-
-    # When the user supplies their own template, dispatch to the in-process
-    # template_pipeline (Branch B) instead of running SlideGen's agents.
-    # This branches BEFORE any expensive SlideGen work happens.
-    if args.template_path:
-        from SlidesAgent.template_pipeline import generate as generate_template_aware
-        print(f"[dispatch] --template_path={args.template_path} provided; routing to template_pipeline.")
-        out_pptx = generate_template_aware(args, args.template_path)
-        if out_pptx is None:
-            sys.exit(1)
-        sys.exit(0)
 
     if args.preference_model is None:
         args.preference_model = args.model_name_t
@@ -402,5 +389,12 @@ if __name__ == '__main__':
     with open(detail_log_file, 'w') as f:
         json.dump(detail_log, f, indent=4)
     print("✅ all files exist……")
-    generate_pptx_from_plan(args, 3)
+    if args.template_path:
+        from SlidesAgent.layout_binder import bind_and_render
+        print(f"[render] --template_path={args.template_path} provided; running layout binder + user-template renderer.")
+        out_pptx = bind_and_render(args, args.template_path)
+        if out_pptx is None:
+            sys.exit(1)
+    else:
+        generate_pptx_from_plan(args, 3)
  

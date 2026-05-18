@@ -200,7 +200,7 @@ def build_formula_json(
                         ],
                     },
                 ],
-                max_tokens=cfg.get("max_tokens", 1024),
+                max_completion_tokens=cfg.get("max_tokens", 1024),
                 temperature=cfg.get("temperature", 0.2),
                 top_p=cfg.get("top_p", 0.95),
                 # timeout=60,
