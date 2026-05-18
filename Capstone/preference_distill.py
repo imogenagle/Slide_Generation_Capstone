@@ -123,6 +123,10 @@ def clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
 def bucket_score(value: float, low: float = 0.33, high: float = 0.66) -> str:
     if value < low:
         return "low"
@@ -307,12 +311,15 @@ def sample_representative_slide_indices(metrics: list[dict[str, Any]], max_sampl
     return sorted(indices)
 
 
-def build_numeric_preferences(deck_evidence: list[dict[str, Any]]) -> dict[str, float]:
+def build_numeric_preferences(deck_evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    slide_counts: list[int] = []
     text_ratios: list[float] = []
     brightness: list[float] = []
     colorfulness: list[float] = []
 
     for deck in deck_evidence:
+        if "slide_count" in deck:
+            slide_counts.append(int(deck["slide_count"]))
         numeric_stats = ((deck.get("deck_stats") or {}).get("numeric_stats") or {})
         if "avg_text_region_ratio" in numeric_stats:
             text_ratios.append(float(numeric_stats["avg_text_region_ratio"]))
@@ -321,12 +328,151 @@ def build_numeric_preferences(deck_evidence: list[dict[str, Any]]) -> dict[str, 
         if "avg_colorfulness" in numeric_stats:
             colorfulness.append(float(numeric_stats["avg_colorfulness"]))
 
+    slide_count_mean = mean([float(v) for v in slide_counts])
+    slide_count_std = stdev([float(v) for v in slide_counts])
+    slide_count_low = int(round(max(min(slide_counts, default=0), slide_count_mean - max(1.0, slide_count_std)))) if slide_counts else 0
+    slide_count_high = int(round(min(max(slide_counts, default=0), slide_count_mean + max(1.0, slide_count_std)))) if slide_counts else 0
+    if slide_counts and slide_count_low >= slide_count_high:
+        center = int(round(slide_count_mean))
+        slide_count_low = max(min(slide_counts), center - 1)
+        slide_count_high = min(max(slide_counts), center + 1)
+
+    avg_text_density_proxy = round(mean(text_ratios), 4)
+    text_density_proxy_std = round(stdev(text_ratios), 4)
+
     return {
-        "avg_text_density_proxy": round(mean(text_ratios), 4),
-        "text_density_proxy_std": round(stdev(text_ratios), 4),
+        "target_slide_count": round(slide_count_mean, 2),
+        "slide_count_std": round(slide_count_std, 2),
+        "slide_count_range": [slide_count_low, slide_count_high] if slide_counts else [],
+        "target_avg_text_density_proxy": avg_text_density_proxy,
+        "text_density_proxy_std": text_density_proxy_std,
+        "target_text_density_proxy_range": [
+            round(max(0.0, avg_text_density_proxy - text_density_proxy_std), 4),
+            round(avg_text_density_proxy + text_density_proxy_std, 4),
+        ] if text_ratios else [],
         "avg_brightness_proxy": round(mean(brightness), 4),
         "avg_colorfulness_proxy": round(mean(colorfulness), 4),
     }
+
+
+def _coerce_float(raw_value: Any, *, low: float, high: float) -> float | None:
+    if raw_value is None:
+        return None
+    try:
+        value = float(raw_value)
+    except Exception:
+        return None
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return round(clamp(value, low, high), 4)
+
+
+def build_fallback_numeric_targets(
+    planning_preferences: dict[str, Any],
+    deterministic_numeric_preferences: dict[str, Any],
+) -> dict[str, Any]:
+    bullet_map = {"low": 2.0, "medium": 3.5, "high": 4.8}
+    word_map = {"low": 16.0, "medium": 26.0, "high": 36.0}
+    usage_map = {"low": 0.18, "medium": 0.35, "high": 0.55}
+    splitting_map = {"coarse": 1.3, "balanced": 2.0, "fine_grained": 2.8}
+
+    layout_bias = list(planning_preferences.get("layout_bias") or [])
+    bullet_pref = str(planning_preferences.get("bullet_density_preference", "unknown"))
+    text_pref = str(planning_preferences.get("text_density_preference", "unknown"))
+    figure_pref = str(planning_preferences.get("figure_usage_preference", "unknown"))
+    table_pref = str(planning_preferences.get("table_usage_preference", "unknown"))
+    formula_pref = str(planning_preferences.get("formula_usage_preference", "unknown"))
+    split_pref = str(planning_preferences.get("section_splitting_preference", "unknown"))
+
+    fallback: dict[str, Any] = {
+        "target_avg_bullets_per_slide": bullet_map.get(bullet_pref),
+        "target_avg_words_per_slide": word_map.get(text_pref),
+        "target_fraction_figure_slides": usage_map.get(figure_pref),
+        "target_fraction_table_slides": usage_map.get(table_pref),
+        "target_fraction_formula_slides": usage_map.get(formula_pref),
+        "target_avg_slides_per_section": splitting_map.get(split_pref),
+    }
+
+    if "text_only" in layout_bias:
+        fallback["target_fraction_text_only_slides"] = 0.35
+    if "multi_visual" in layout_bias:
+        fallback["target_fraction_multi_visual_slides"] = 0.32
+    if "formula_capable" in layout_bias:
+        fallback["target_fraction_formula_capable_slides"] = max(
+            usage_map.get(formula_pref, 0.22),
+            0.28,
+        )
+    if "image_right" in layout_bias:
+        fallback["target_fraction_image_right_slides"] = 0.2
+    if "image_left" in layout_bias:
+        fallback["target_fraction_image_left_slides"] = 0.14
+    if "image_top" in layout_bias:
+        fallback["target_fraction_image_top_slides"] = 0.12
+
+    text_proxy_range = deterministic_numeric_preferences.get("target_text_density_proxy_range") or []
+    if text_proxy_range:
+        midpoint = sum(text_proxy_range) / 2.0
+        fallback["target_avg_words_per_slide"] = round(
+            clamp(8.0 + midpoint * 120.0, 10.0, 48.0),
+            2,
+        )
+
+    return fallback
+
+
+def sanitize_numeric_preferences(
+    raw_numeric_preferences: dict[str, Any] | None,
+    planning_preferences: dict[str, Any],
+    deterministic_numeric_preferences: dict[str, Any],
+) -> dict[str, Any]:
+    raw_numeric_preferences = raw_numeric_preferences or {}
+    sanitized = dict(deterministic_numeric_preferences)
+    fallback_numeric = build_fallback_numeric_targets(
+        planning_preferences,
+        deterministic_numeric_preferences,
+    )
+
+    scalar_specs = {
+        "target_avg_bullets_per_slide": (1.0, 6.0),
+        "target_avg_words_per_slide": (8.0, 55.0),
+        "target_fraction_figure_slides": (0.0, 1.0),
+        "target_fraction_table_slides": (0.0, 1.0),
+        "target_fraction_formula_slides": (0.0, 1.0),
+        "target_fraction_text_only_slides": (0.0, 1.0),
+        "target_fraction_multi_visual_slides": (0.0, 1.0),
+        "target_fraction_formula_capable_slides": (0.0, 1.0),
+        "target_fraction_image_right_slides": (0.0, 1.0),
+        "target_fraction_image_left_slides": (0.0, 1.0),
+        "target_fraction_image_top_slides": (0.0, 1.0),
+        "target_avg_slides_per_section": (1.0, 4.0),
+    }
+
+    for key, (low, high) in scalar_specs.items():
+        raw_value = _coerce_float(raw_numeric_preferences.get(key), low=low, high=high)
+        fallback_value = fallback_numeric.get(key)
+        if raw_value is not None:
+            sanitized[key] = raw_value
+        elif fallback_value is not None:
+            sanitized[key] = round(float(fallback_value), 4)
+
+    raw_range = raw_numeric_preferences.get("slide_count_range")
+    if isinstance(raw_range, list) and len(raw_range) == 2:
+        low = _coerce_float(raw_range[0], low=1.0, high=200.0)
+        high = _coerce_float(raw_range[1], low=1.0, high=200.0)
+        if low is not None and high is not None:
+            low_i = int(round(min(low, high)))
+            high_i = int(round(max(low, high)))
+            if low_i < high_i:
+                sanitized["slide_count_range"] = [low_i, high_i]
+
+    if "target_slide_count" in sanitized and sanitized.get("slide_count_range"):
+        low_i, high_i = sanitized["slide_count_range"]
+        sanitized["target_slide_count"] = round(
+            clamp(float(sanitized["target_slide_count"]), float(low_i), float(high_i)),
+            2,
+        )
+
+    return sanitized
 
 
 def sanitize_profile(
@@ -369,11 +515,34 @@ def sanitize_profile(
             cleaned_section_categories.append(value)
 
     notes = raw_profile.get("evidence_summary", {}).get("notes", "")
-    numeric_preferences = build_numeric_preferences(deck_evidence)
+    deterministic_numeric_preferences = build_numeric_preferences(deck_evidence)
+
+    cleaned_planning_preferences = {
+        "section_splitting_preference": split_pref("section_splitting_preference"),
+        "bullet_density_preference": pref("bullet_density_preference"),
+        "text_density_preference": pref("text_density_preference"),
+        "visual_density_preference": pref("visual_density_preference"),
+        "figure_usage_preference": pref("figure_usage_preference"),
+        "table_usage_preference": pref("table_usage_preference"),
+        "formula_usage_preference": pref("formula_usage_preference"),
+        "layout_bias": cleaned_layout_bias,
+        "typical_section_categories": cleaned_section_categories,
+        "structure_preferences": {
+            "prefers_agenda_slide": structure_pref("prefers_agenda_slide"),
+            "prefers_takeaway_slide": structure_pref("prefers_takeaway_slide"),
+            "prefers_multi_slide_method_section": structure_pref("prefers_multi_slide_method_section"),
+            "prefers_multi_slide_results_section": structure_pref("prefers_multi_slide_results_section"),
+        },
+    }
+    numeric_preferences = sanitize_numeric_preferences(
+        raw_profile.get("numeric_preferences"),
+        cleaned_planning_preferences,
+        deterministic_numeric_preferences,
+    )
 
     return {
         "author_id": author_id,
-        "profile_version": 3,
+        "profile_version": 4,
         "distilled_from": {
             "paper_count": len(paper_ids),
             "paper_ids": paper_ids,
@@ -382,23 +551,7 @@ def sanitize_profile(
                 "slides_per_deck": "representative",
             },
         },
-        "planning_preferences": {
-            "section_splitting_preference": split_pref("section_splitting_preference"),
-            "bullet_density_preference": pref("bullet_density_preference"),
-            "text_density_preference": pref("text_density_preference"),
-            "visual_density_preference": pref("visual_density_preference"),
-            "figure_usage_preference": pref("figure_usage_preference"),
-            "table_usage_preference": pref("table_usage_preference"),
-            "formula_usage_preference": pref("formula_usage_preference"),
-            "layout_bias": cleaned_layout_bias,
-            "typical_section_categories": cleaned_section_categories,
-            "structure_preferences": {
-                "prefers_agenda_slide": structure_pref("prefers_agenda_slide"),
-                "prefers_takeaway_slide": structure_pref("prefers_takeaway_slide"),
-                "prefers_multi_slide_method_section": structure_pref("prefers_multi_slide_method_section"),
-                "prefers_multi_slide_results_section": structure_pref("prefers_multi_slide_results_section"),
-            },
-        },
+        "planning_preferences": cleaned_planning_preferences,
         "numeric_preferences": numeric_preferences,
         "evidence_summary": {
             "notes": str(notes).strip() or "No summary provided.",
@@ -558,7 +711,13 @@ def call_distiller_model(model_name: str, system_prompt: str, user_prompt: str, 
     else:
         request_kwargs["max_tokens"] = 1400
 
+    print(
+        f"[preferences] Sending distiller request to model={resolved_model_name} "
+        f"with {len(deck_evidence)} reference deck(s)",
+        flush=True,
+    )
     response = client.chat.completions.create(**request_kwargs)
+    print("[preferences] Distiller response received", flush=True)
     raw_text = response.choices[0].message.content or ""
     return extract_json_object(raw_text)
 
@@ -582,7 +741,14 @@ def distill_author_profile(
     profile_path = output_dir / f"{author_id}.json"
 
     if profile_path.exists() and not force_refresh:
-        return json.loads(profile_path.read_text(encoding="utf-8"))
+        cached_profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        cached_numeric = dict(cached_profile.get("numeric_preferences") or {})
+        if (
+            int(cached_profile.get("profile_version", 0) or 0) >= 4
+            and "target_slide_count" in cached_numeric
+            and "target_avg_words_per_slide" in cached_numeric
+        ):
+            return cached_profile
 
     load_dotenv(REPO_ROOT / ".env")
 
@@ -594,6 +760,7 @@ def distill_author_profile(
     if author_row is None:
         raise ValueError(f"Unknown author_id: {author_id}")
 
+    print(f"[preferences] Selecting source decks for author_id={author_id}", flush=True)
     selected_papers = select_papers_for_author(
         author_id,
         paper_author_rows,
@@ -606,8 +773,16 @@ def distill_author_profile(
         raise ValueError(f"No eligible papers with raw decks found for author_id: {author_id}")
 
     author_metadata = build_author_metadata(author_row, selected_papers, max_papers)
+    print(
+        f"[preferences] Using papers: {', '.join(author_metadata['paper_ids'])}",
+        flush=True,
+    )
+    print("[preferences] Building deck evidence", flush=True)
     deck_evidence = build_deck_evidence(selected_papers)
+    print("[preferences] Deck evidence ready", flush=True)
+
     rendered_prompt = render_prompt(prompt_path, author_metadata, deck_evidence)
+    print("[preferences] Distiller prompt rendered", flush=True)
 
     input_bundle_path = output_dir / f"{author_id}.input.json"
     input_bundle = {

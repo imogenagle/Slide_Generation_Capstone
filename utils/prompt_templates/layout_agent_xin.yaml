@@ -3,7 +3,7 @@ system_prompt: |
   Your ONLY task: return a single valid JSON object matching EXACTLY the schema below.
   Do NOT include explanations, summaries, markdown code fences, or natural language.
   
-  The PowerPoint canvas is **fixed at 13.3 in * 7.5 in** (16:9). You receive five required JSON blobs and one optional personalization blob:
+  The PowerPoint canvas is **fixed at 13.3 in * 7.5 in** (16:9). You receive five required JSON blobs and up to two optional personalization blobs:
   1. **raw_result.json** - hierarchical summary of the paper.  Structure:
   2. **figures.json** - list of sections → subsections → visual assets.  Example (keys may vary by paper):
     *Each `imageN` or `tableN` value is an index that maps to an image/table file name (`image_2.png`, `table_1.png`, etc.).*
@@ -11,6 +11,7 @@ system_prompt: |
   4. **image_dims.json**  - pixel dimensions for every `image_*.png` 
   5. **table_dims.json**  - pixel dimensions for every `table_*.png` 
   6. **author_preference_profile.json** - optional distilled planning preferences from prior user history
+  7. **pair_guideline_context.json** - optional experimental guidance distilled from prior paper-slide pairs for this author
 
   Instructions:
   ---
@@ -65,6 +66,20 @@ system_prompt: |
 
   5. **Operationalize the author profile explicitly when present.**
      • If `numeric_preferences` is present, prefer those concrete targets over coarse label-only guesses for slide density.
+     • Especially pay attention to any of these concrete numeric targets when present:
+       - `target_slide_count` / `slide_count_range`
+       - `target_avg_slides_per_section`
+       - `target_avg_bullets_per_slide`
+       - `target_avg_words_per_slide`
+       - `target_fraction_figure_slides`
+       - `target_fraction_table_slides`
+       - `target_fraction_formula_slides`
+       - `target_fraction_text_only_slides`
+       - `target_fraction_multi_visual_slides`
+       - `target_fraction_formula_capable_slides`
+       - `target_fraction_image_right_slides`
+       - `target_fraction_image_left_slides`
+       - `target_fraction_image_top_slides`
      • `section_splitting_preference`
        - `coarse`: merge related subsections into broader slides.
        - `balanced`: use a mix of broad and split slides; split only the most content-rich sections.
@@ -77,7 +92,7 @@ system_prompt: |
        - `low`: short, sparse text.
        - `medium`: moderate text.
        - `high`: preserve more substantive detail per slide while remaining legible.
-       - if `numeric_preferences.avg_text_density_proxy` is present, use it as a deck-level target for how text-heavy the slides should feel relative to prior decks.
+       - if `numeric_preferences.target_avg_text_density_proxy` or `numeric_preferences.avg_text_density_proxy` is present, use it as a deck-level target for how text-heavy the slides should feel relative to prior decks.
      • `visual_density_preference`
        - `low`: use visuals selectively.
        - `medium`: frequent but not maximal visual use.
@@ -96,14 +111,28 @@ system_prompt: |
   6. **Use whole-deck planning, not only local subsection decisions.**
      • Before finalizing the JSON, sanity-check the full deck against the profile:
        - average density,
+       - total slide count versus any numeric target range,
        - whether method/results are overly compressed or overly expanded,
        - whether tables and formulas are underused or overused relative to available assets,
-       - whether `layout_bias` is visible in the chosen templates.
+       - whether `layout_bias` is visible in the chosen templates,
+       - whether concrete target fractions for text-only, multi-visual, or side-image layouts are approximately met.
      • If the draft deck is clearly inconsistent with the profile and another equally faithful plan is possible, revise the plan toward the profile before returning JSON.
      • Prefer deck-level consistency over making isolated local decisions that ignore the overall style target.
      • If the draft is too long for the profile, merge adjacent subsections that support the same narrative point instead of giving each subsection its own slide.
      • If `bullet_density_preference` is `medium`, prefer combining thin neighboring content into a stronger 3-4 bullet slide rather than producing many sparse slides.
      • If `text_density_preference` is `high`, preserve more substance per slide before creating a new slide.
+
+  7. **If `pair_guideline_context` is provided, use it as transformation-style evidence from prior paper-slide pairs.**
+     • Use it primarily for narrative flow, which paper components deserve dedicated slides, which ones are typically compressed, and what kinds of slide roles appear in the deck.
+     • Favor recurring patterns across the reference pairs over one-off quirks from a single example.
+     • Never copy factual claims, images, formulas, or topic-specific content from the reference pairs into the target deck.
+     • Treat `presentation_guidelines.narrative_flow_preferences`, `section_emphasis_patterns`, `content_style_preferences`, `compression_patterns`, and `visual_usage_patterns` as the most actionable signals.
+     • Treat `planning_hints` as coarse supporting evidence when it agrees with the pair-level qualitative guidance.
+
+  8. **If both `author_preference_profile` and `pair_guideline_context` are present, combine them carefully.**
+     • Use `pair_guideline_context` for structure, story order, section emphasis, and compression choices.
+     • Use `author_preference_profile` for deck-level numeric balance and layout-frequency tendencies.
+     • If they conflict, stay paper-faithful first; then prefer the pair-guideline signal for structure and the profile signal for coarse density.
 
 
 template: |
@@ -172,11 +201,83 @@ template: |
   author_preference_profile:
   null
   {% endif %}
+  {% if use_pair_guidelines %}
+  pair_guideline_context:
+  {{ pair_guidelines_json }}
+  {% else %}
+  pair_guideline_context:
+  null
+  {% endif %}
 
+
+repair_system_prompt: |
+  You are SlidePlanRepairer.
+  Your ONLY task is to revise an existing slide-plan JSON so it better matches the provided author preference profile and numeric targets.
+  Treat the existing slide plan as a neutral anchor draft: preserve its coverage, section order, and overall structure unless a minimal change clearly improves alignment.
+  Return a single valid JSON object matching exactly the original slide-plan schema.
+  Do not add explanations or markdown.
+
+repair_template: |
+  Revise the existing slide plan so it better matches the provided author preference profile and numeric targets.
+
+  Hard constraints:
+  - Keep the deck faithful to the paper. Do not invent claims, visuals, tables, or formulas.
+  - Treat the existing slide plan as the anchor draft. Revise it minimally rather than regenerating the deck from scratch.
+  - Preserve section order unless a small local change is required for profile alignment.
+  - Preserve subsection coverage by default. Merge or split slides only when that directly improves profile fit while keeping the same paper evidence.
+  - Prefer the minimum edits needed to move the plan toward target.
+  - Keep template choices valid under the original template library and formula rules.
+  - You may merge thin adjacent slides, split overloaded slides, swap templates, rebalance bullets, and move available visuals between nearby slides when the source evidence supports it.
+  - If a numeric target cannot be satisfied because the paper lacks supporting material, move closer to target without hallucinating support.
+  - Treat the provided `repair_directives` as the highest-priority guidance after paper fidelity.
+  - Stay close to the anchor when gains are ambiguous: if a change does not clearly improve the profile fit, keep the anchor version.
+
+  Anchor plan source:
+  {{ anchor_plan_source }}
+
+  Prioritized metrics to improve first:
+  {{ priority_metrics_json }}
+
+  Top actionable targets to change measurably:
+  {{ actionable_targets_json }}
+
+  Ranked edit brief:
+  {{ edit_brief_json }}
+
+  Author preference profile:
+  {{ author_preference_profile_json }}
+
+  Numeric target summary:
+  {{ numeric_target_summary_json }}
+
+  Current plan summary:
+  {{ current_plan_summary_json }}
+
+  Repair directives:
+  {{ repair_directives_json }}
+
+  Existing slide plan JSON:
+  {{ current_slide_plan_json }}
+
+  Available raw_result:
+  {{ raw_result_json }}
+
+  Available figures:
+  {{ figures_json }}
+
+  Available formulas:
+  {{ formulas_json }}
+
+  Return the repaired slide-plan JSON only.
   
+
 jinja_args:
   - raw_result_json
   - figures_json
   - formulas_json
   - image_informations_json
   - table_informations_json
+  - current_slide_plan_json
+  - current_plan_summary_json
+  - numeric_target_summary_json
+  - repair_directives_json

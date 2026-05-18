@@ -8,6 +8,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -135,9 +136,13 @@ def resolve_output_path(metric_name: str, output: Path | None, stem: str) -> Pat
 
 def _normalize_score(value: Any) -> float:
     try:
-        return max(0.0, min(1.0, float(value)))
+        numeric = float(value)
     except Exception:
         return 0.0
+    if numeric > 1.0:
+        numeric = max(1.0, min(5.0, numeric))
+        return round((numeric - 1.0) / 4.0, 4)
+    return max(0.0, min(1.0, numeric))
 
 
 def encode_image_data_uri(image_path: Path) -> str:
@@ -180,6 +185,8 @@ def render_pptx_to_images(pptx_path: Path, output_dir: Path, *, force: bool = Fa
     except ModuleNotFoundError as exc:
         raise RuntimeError("pdf2image is required to render slide images.") from exc
     pptx_path = pptx_path.resolve()
+    if not pptx_path.exists():
+        raise FileNotFoundError(f"PPTX not found: {pptx_path}")
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     existing = sorted(output_dir.glob("slide_*.jpg"), key=numeric_slide_sort_key)
@@ -189,9 +196,13 @@ def render_pptx_to_images(pptx_path: Path, output_dir: Path, *, force: bool = Fa
     for path in output_dir.glob("slide_*.jpg"):
         path.unlink()
 
+    soffice_path = shutil.which("soffice")
+    if not soffice_path:
+        raise RuntimeError("LibreOffice 'soffice' is required to render PPTX files, but it was not found on PATH.")
+
     with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as user_install_dir:
         command_list = [
-            "soffice",
+            soffice_path,
             "--headless",
             "--norestore",
             "--nolockcheck",
@@ -205,11 +216,29 @@ def render_pptx_to_images(pptx_path: Path, output_dir: Path, *, force: bool = Fa
         env = os.environ.copy()
         env["LC_ALL"] = "en_US.UTF-8"
         env["LANG"] = "en_US.UTF-8"
-        subprocess.run(command_list, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        completed = subprocess.run(
+            command_list,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if completed.returncode != 0:
+            stdout = (completed.stdout or "").strip()
+            stderr = (completed.stderr or "").strip()
+            details = "\n".join(part for part in [stdout, stderr] if part)
+            if not details:
+                details = "no stdout/stderr captured"
+            raise RuntimeError(
+                f"LibreOffice failed while rendering PPTX to PDF (exit {completed.returncode}): {pptx_path}\n{details}"
+            )
 
         pdf_candidates = [path for path in Path(temp_dir).iterdir() if path.suffix.lower() == ".pdf"]
         if not pdf_candidates:
-            raise RuntimeError(f"No PDF rendered from PPTX: {pptx_path}")
+            raise RuntimeError(
+                f"LibreOffice completed without producing a PDF for: {pptx_path}\n"
+                f"Temporary output directory: {temp_dir}"
+            )
         images = convert_from_path(str(pdf_candidates[0]), dpi=dpi)
         for index, image in enumerate(images, start=1):
             image.save(output_dir / f"slide_{index:04d}.jpg", "JPEG")

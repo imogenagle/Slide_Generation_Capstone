@@ -66,6 +66,7 @@ template: |
   - layout_bias: recurring coarse layouts such as text_only, image_right, image_left, image_top, multi_visual, formula_capable
   - typical_section_categories: recurring, presentation-agnostic section kinds that this author often includes or emphasizes across decks. Use only the normalized labels above, ordered from most characteristic to least characteristic. Prefer broad categories like opening_context, prior_work, methodology_process, results_findings, conclusion_takeaways, case_study_example, recommendations_implications, etc.
   - structure_preferences: recurring deck organization patterns
+  - numeric_preferences: approximate numeric targets for deck planning. Use conservative estimates from the sampled evidence when possible. If you are unsure, prefer `null` over guessing.
 
   Important guidance for typical_section_categories:
   - Infer section categories from slide titles, deck organization, and visible presentation flow, not from the paper topic itself.
@@ -106,6 +107,20 @@ template: |
         "prefers_multi_slide_method_section": "low|medium|high|unknown",
         "prefers_multi_slide_results_section": "low|medium|high|unknown"
       }
+    },
+    "numeric_preferences": {
+      "target_avg_bullets_per_slide": null,
+      "target_avg_words_per_slide": null,
+      "target_fraction_figure_slides": null,
+      "target_fraction_table_slides": null,
+      "target_fraction_formula_slides": null,
+      "target_fraction_text_only_slides": null,
+      "target_fraction_multi_visual_slides": null,
+      "target_fraction_formula_capable_slides": null,
+      "target_fraction_image_right_slides": null,
+      "target_fraction_image_left_slides": null,
+      "target_fraction_image_top_slides": null,
+      "target_avg_slides_per_section": null
     },
     "evidence_summary": {
       "notes": "1-3 sentence summary grounded in the evidence"

@@ -9,6 +9,11 @@ Use this as a shared running log:
 - group entries by date
 - include the files or subsystem touched when that helps
 
+## 2026-05-05
+
+### Added
+- Added `Capstone/run_batch_experiment.py` to orchestrate a shared sampled cohort across baseline generation, personalized generation, per-deck bundle evaluation, and personalization-alignment evaluation.
+
 ## 2026-04-27
 
 ### Added

@@ -52,6 +52,7 @@ def evaluate_aesthetic_quality(
         model=model,
         request_timeout=request_timeout,
         verbose=verbose,
+        prompt_values={"descr": "The slide image is attached below."},
     )
     return {
         "source": "SlideTailor-derived",
