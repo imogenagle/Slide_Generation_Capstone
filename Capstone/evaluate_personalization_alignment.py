@@ -357,6 +357,80 @@ def coerce_scores(report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
+def determine_applicable_dimensions(extracted_asset_summary: dict[str, Any]) -> tuple[list[str], list[str]]:
+    applicable = {
+        "section_structure_alignment",
+        "bullet_density_alignment",
+        "text_density_alignment",
+        "figure_usage_alignment",
+        "layout_bias_alignment",
+    }
+    skipped: list[str] = []
+
+    baseline_assets = dict(extracted_asset_summary.get("baseline") or {})
+    personalized_assets = dict(extracted_asset_summary.get("personalized") or {})
+
+    table_applicable = bool(
+        baseline_assets.get("table_penalty_applicable") or personalized_assets.get("table_penalty_applicable")
+    )
+    formula_applicable = bool(
+        baseline_assets.get("formula_penalty_applicable") or personalized_assets.get("formula_penalty_applicable")
+    )
+
+    if table_applicable:
+        applicable.add("table_usage_alignment")
+    else:
+        skipped.append("table_usage_alignment")
+
+    if formula_applicable:
+        applicable.add("formula_usage_alignment")
+    else:
+        skipped.append("formula_usage_alignment")
+
+    return [key for key in SCORE_KEYS if key != "overall_style_alignment" and key in applicable], skipped
+
+
+def apply_dimension_applicability(
+    report: dict[str, Any],
+    extracted_asset_summary: dict[str, Any],
+) -> dict[str, Any]:
+    applicable_dims, skipped_dims = determine_applicable_dimensions(extracted_asset_summary)
+
+    for metric_key in skipped_dims:
+        for bucket in ("baseline", "personalized"):
+            report[bucket]["scores"][metric_key] = 0.5
+            rationale = report[bucket].setdefault("rationale", {})
+            rationale[metric_key] = "Skipped from comparison because the target paper did not expose supporting extracted assets for this dimension."
+
+    for bucket in ("baseline", "personalized"):
+        component_values = [float(report[bucket]["scores"][key]) for key in applicable_dims]
+        report[bucket]["scores"]["overall_style_alignment"] = round(mean(component_values), 4) if component_values else 0.5
+
+    lift = report.setdefault("lift", {})
+    for key in SCORE_KEYS:
+        base_val = report["baseline"]["scores"][key]
+        pers_val = report["personalized"]["scores"][key]
+        lift[key] = round(pers_val - base_val, 4)
+
+    overall_delta = float(lift.get("overall_style_alignment", 0.0))
+    winner = "tie"
+    if overall_delta > 0.03:
+        winner = "personalized"
+    elif overall_delta < -0.03:
+        winner = "baseline"
+
+    summary = report.setdefault("summary", {})
+    summary["winner"] = winner
+    if skipped_dims:
+        summary["headline"] = (
+            summary.get("headline")
+            or "Comparison excludes unsupported asset-dependent dimensions for this target paper."
+        )
+    report["applicable_dimensions"] = applicable_dims
+    report["skipped_dimensions"] = skipped_dims
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate personalization alignment lift for baseline vs personalized slide plans.")
     parser.add_argument("--profile", type=Path, required=True, help="Path to distilled author profile JSON.")
@@ -414,6 +488,7 @@ def main() -> None:
         verbose=args.verbose,
     )
     report = coerce_scores(report)
+    report = apply_dimension_applicability(report, extracted_asset_summary)
     numeric_target_summary = build_numeric_target_summary(author_profile)
     numeric_comparison = build_numeric_comparison(
         numeric_target_summary,

@@ -15,6 +15,14 @@ from camel.agents import ChatAgent
 from pptx.util import Cm, Pt
 import time
 
+FORMULA_TEMPLATE_IDS = {
+    "T14_ImageRight_1Formula",
+    "T15_ImageLeft_1Formula",
+    "T16_1Img_2formula_TopTextBottom",
+    "T17_2Img_1formula_TopTextBottom",
+    "T18_2formula_TopTextBottom",
+}
+
 
 def plan_variant_suffix(args) -> str:
     return getattr(
@@ -117,6 +125,37 @@ def summarize_slide_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
         "multi_visual": 0,
         "formula_capable": 0,
     }
+
+
+def _fallback_template_without_formulas(slide: Dict[str, Any]) -> str:
+    image_count = len(slide.get("images") or [])
+    table_count = len(slide.get("tables") or [])
+    visual_count = image_count + table_count
+
+    if visual_count <= 0:
+        return "T1_TextOnly"
+    if visual_count >= 2:
+        return "T5_TwoImages2"
+
+    template_id = str(slide.get("template_id") or "")
+    if "ImageLeft" in template_id:
+        return "T3_ImageLeft"
+    if table_count > 0:
+        return "T4_ImageTop"
+    return "T2_ImageRight"
+
+
+def sanitize_slide_plan_templates(slide_plan: Dict[str, Any]) -> Dict[str, Any]:
+    slides = list(slide_plan.get("slides") or [])
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        template_id = str(slide.get("template_id") or "")
+        formulas = list(slide.get("formulas") or [])
+        if template_id in FORMULA_TEMPLATE_IDS and not formulas:
+            slide["template_id"] = _fallback_template_without_formulas(slide)
+    slide_plan["slides"] = slides
+    return slide_plan
 
     for slide in slides:
         section = str(slide.get("section") or "").strip() or "UNKNOWN"
@@ -226,6 +265,137 @@ def derive_asset_support(
     }
 
 
+def derive_asset_selection_guidance(
+    author_preference_profile: Dict[str, Any] | None,
+    *,
+    formulas_json: Dict[str, Any] | List[Any],
+    images: Dict[str, Any],
+    tables: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not author_preference_profile:
+        return {}
+
+    planning = dict(author_preference_profile.get("planning_preferences") or {})
+    numeric = build_numeric_target_summary(author_preference_profile)
+    figure_pref = str(planning.get("figure_usage_preference") or "").strip().lower()
+    table_pref = str(planning.get("table_usage_preference") or "").strip().lower()
+    formula_pref = str(planning.get("formula_usage_preference") or "").strip().lower()
+    visual_pref = str(planning.get("visual_density_preference") or "").strip().lower()
+    text_pref = str(planning.get("text_density_preference") or "").strip().lower()
+    layout_bias = {str(value).strip().lower() for value in (planning.get("layout_bias") or [])}
+
+    formula_refs: set[str] = set()
+    _collect_formula_asset_refs(formulas_json, formula_refs)
+    image_count = len(images) if isinstance(images, dict) else len(images or [])
+    table_count = len(tables) if isinstance(tables, dict) else len(tables or [])
+    formula_count = len(formula_refs)
+
+    low_visual_text_led = (
+        "text_only" in layout_bias
+        or visual_pref == "low"
+        or (figure_pref == "low" and table_pref in {"", "low"})
+    )
+    technical_evidence_heavy = (
+        formula_pref in {"medium", "high"}
+        or table_pref in {"medium", "high"}
+        or "formula_capable" in layout_bias
+    )
+
+    guidance: Dict[str, Any] = {
+        "profile_asset_mode": (
+            "low_visual_text_led"
+            if low_visual_text_led
+            else "technical_evidence_heavy"
+            if technical_evidence_heavy
+            else "balanced_visual"
+        ),
+        "available_asset_counts": {
+            "images": image_count,
+            "tables": table_count,
+            "formulas": formula_count,
+        },
+        "avoid_optional_figures": bool(low_visual_text_led or figure_pref == "low"),
+        "avoid_optional_tables": bool(table_pref == "low" and visual_pref == "low"),
+        "prefer_text_only_when_visuals_are_weak": bool(low_visual_text_led),
+        "prioritize_tables_for_quantitative_slides": bool(table_pref in {"medium", "high"} and table_count > 0),
+        "prefer_figures_for_overview_or_mechanism_slides": bool(
+            figure_pref in {"medium", "high"} and image_count > 0 and not low_visual_text_led
+        ),
+        "prefer_formula_capable_layouts_when_supported": bool(
+            formula_pref in {"medium", "high"} and formula_count > 0
+        ),
+        "compensate_for_missing_formulas_with_density": bool(
+            formula_pref in {"medium", "high"} and formula_count == 0
+        ),
+        "reserve_scarce_tables_for_quantitative_slides": bool(
+            table_pref in {"medium", "high"} and 0 < table_count <= 2
+        ),
+        "reserve_scarce_figures_for_core_explanatory_slides": bool(
+            figure_pref in {"medium", "high"} and 0 < image_count <= 2 and not low_visual_text_led
+        ),
+        "default_visual_fallback": (
+            "text_only"
+            if low_visual_text_led
+            else "table_then_text"
+            if technical_evidence_heavy and table_count > 0
+            else "image_then_text"
+        ),
+        "quantitative_slide_evidence_priority": (
+            ["table", "image", "text_only"]
+            if table_pref in {"medium", "high"} and table_count > 0
+            else ["text_only", "table", "image"]
+            if low_visual_text_led
+            else ["image", "table", "text_only"]
+        ),
+        "overview_slide_evidence_priority": (
+            ["text_only", "image", "table"]
+            if low_visual_text_led
+            else ["image", "text_only", "table"]
+        ),
+        "notes": [],
+    }
+
+    notes = guidance["notes"]
+    if guidance["avoid_optional_figures"]:
+        notes.append(
+            "Default to text-only on overview, motivation, and method slides unless an extracted figure is central to the subsection's main claim."
+        )
+    if guidance["avoid_optional_tables"]:
+        notes.append(
+            "Use tables sparingly; do not place a table on a slide unless it clearly communicates evidence better than text alone."
+        )
+    if guidance["prioritize_tables_for_quantitative_slides"]:
+        notes.append(
+            "Reserve extracted tables for evaluation, comparison, benchmark, ablation, or results slides before using generic figures on those quantitative slides."
+        )
+    if guidance["reserve_scarce_tables_for_quantitative_slides"]:
+        notes.append(
+            "Because tables are scarce, do not spend them on peripheral slides; save them for the strongest quantitative evidence slides first."
+        )
+    if guidance["prefer_figures_for_overview_or_mechanism_slides"]:
+        notes.append(
+            "When a figure and text are both plausible, prefer diagrams or figures on mechanism/overview slides if they materially clarify the idea."
+        )
+    if guidance["reserve_scarce_figures_for_core_explanatory_slides"]:
+        notes.append(
+            "Because figures are scarce, spend them on the core mechanism, pipeline, or overview slides where they materially clarify the paper."
+        )
+    if guidance["compensate_for_missing_formulas_with_density"]:
+        notes.append(
+            "When formulas are unavailable, express technical style through denser explanation, stronger results evidence, and better use of available tables/figures rather than extra section splitting."
+        )
+    if text_pref == "high" and table_pref in {"medium", "high"}:
+        notes.append(
+            "For technical profiles, favor denser evidence-heavy slides over adding extra sections when the same content can fit coherently on fewer slides."
+        )
+    if numeric.get("target_fraction_text_only_slides") is not None and low_visual_text_led:
+        notes.append(
+            "Treat the target text-only fraction as an active deck-level goal when deciding whether a visual is truly necessary."
+        )
+
+    return guidance
+
+
 def infer_priority_metric_keys(
     author_preference_profile: Dict[str, Any] | None,
     numeric: Dict[str, Any],
@@ -270,7 +440,7 @@ def target_delta_threshold(metric_key: str) -> float:
 
 def is_actionable_mismatch(metric_key: str, asset_support: Dict[str, Any]) -> bool:
     if metric_key == "slide_count":
-        return False
+        return True
     if metric_key in {"target_fraction_formula_slides", "target_fraction_formula_capable_slides"}:
         return asset_support.get("supports_formulas", False)
     if metric_key == "target_fraction_table_slides":
@@ -351,6 +521,19 @@ def build_repair_directives(
             "metric_mismatch_scores": {},
             "priority_metrics": [],
             "edit_brief": [],
+        }
+
+    if not isinstance(plan_summary, dict):
+        return {
+            "needs_repair": False,
+            "target_summary": {},
+            "goals": [],
+            "mismatches": [],
+            "total_mismatch_score": 0.0,
+            "metric_mismatch_scores": {},
+            "priority_metrics": [],
+            "edit_brief": [],
+            "reason": "missing_plan_summary",
         }
 
     numeric = build_numeric_target_summary(author_preference_profile)
@@ -592,32 +775,38 @@ def evaluate_repair_acceptance(
 
     drift_score = compute_anchor_drift_score(draft_summary, repaired_summary)
     max_allowed_drift = round(max(1.75, draft_score * 0.25), 4) if draft_score > 0 else 1.75
+    slide_count_delta = abs(
+        float(repaired_summary.get("slide_count", 0.0)) - float(draft_summary.get("slide_count", 0.0))
+    )
+    max_allowed_slide_count_delta = 3.0
 
-    # Accept any repair that reduces total profile mismatch. Drift and
-    # per-metric regressions are still reported for inspection, but they no
-    # longer block adoption because personalization alignment is the primary
-    # objective.
-    accepted = score_improvement > 0.0
+    accepted = (
+        score_improvement >= required_improvement
+        and bool(measurable_target_improvements)
+        and not worsened_priority_metrics
+        and drift_score <= max_allowed_drift
+        and slide_count_delta <= max_allowed_slide_count_delta
+    )
 
     reason_parts: List[str] = []
-    if score_improvement <= 0.0:
+    if score_improvement < required_improvement:
         reason_parts.append(
-            f"repair did not improve total profile mismatch (delta={score_improvement})"
+            f"repair improvement {score_improvement} did not reach required threshold {required_improvement}"
         )
     if worsened_priority_metrics:
-        reason_parts.append(
-            "diagnostic only: worsened priority metrics: " + ", ".join(worsened_priority_metrics)
-        )
+        reason_parts.append("worsened priority metrics: " + ", ".join(worsened_priority_metrics))
     if not measurable_target_improvements:
-        reason_parts.append(
-            "diagnostic only: no actionable target improved by its minimum delta"
-        )
+        reason_parts.append("no actionable target improved by its minimum delta")
     if drift_score > max_allowed_drift:
         reason_parts.append(
-            f"diagnostic only: anchor drift {drift_score} exceeds prior threshold {max_allowed_drift}"
+            f"repair drift {drift_score} exceeds threshold {max_allowed_drift}"
+        )
+    if slide_count_delta > max_allowed_slide_count_delta:
+        reason_parts.append(
+            f"slide-count change {slide_count_delta} exceeds threshold {max_allowed_slide_count_delta}"
         )
     if accepted and not reason_parts:
-        reason_parts.append("repair reduced total profile mismatch")
+        reason_parts.append("repair made a meaningful improvement without excessive structural drift")
 
     return {
         "accepted": accepted,
@@ -630,6 +819,8 @@ def evaluate_repair_acceptance(
         "missed_target_improvements": missed_target_improvements,
         "drift_score": drift_score,
         "max_allowed_drift": max_allowed_drift,
+        "slide_count_delta": slide_count_delta,
+        "max_allowed_slide_count_delta": max_allowed_slide_count_delta,
         "reason": "; ".join(reason_parts),
     }
 
@@ -678,6 +869,7 @@ def render_planner_prompt(
     tables: Dict[str, Any],
     use_author_preferences: bool,
     author_preference_profile: Dict[str, Any] | None,
+    asset_selection_guidance: Dict[str, Any] | None,
     use_pair_guidelines: bool,
     pair_guidelines: Dict[str, Any] | None,
 ) -> str:
@@ -689,6 +881,7 @@ def render_planner_prompt(
         table_informations_json=tables,
         use_author_preferences=use_author_preferences,
         author_preference_profile_json=author_preference_profile,
+        asset_selection_guidance_json=asset_selection_guidance or {},
         use_pair_guidelines=use_pair_guidelines,
         pair_guidelines_json=pair_guidelines,
     )
@@ -723,6 +916,19 @@ def generate_slide_plan(
         if not profile_path.exists():
             raise FileNotFoundError(f"Author preference profile not found: {profile_path}")
         author_preference_profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    asset_selection_guidance = derive_asset_selection_guidance(
+        author_preference_profile,
+        formulas_json=formulas_json,
+        images=images,
+        tables=tables,
+    )
+    if asset_selection_guidance:
+        guidance_debug_path = (
+            f'contents/{args.paper_name}/'
+            f'<{args.model_name_t}_{args.model_name_v}>_asset_selection_guidance{plan_variant_suffix(args)}.json'
+        )
+        with open(guidance_debug_path, 'w', encoding="utf-8") as f:
+            json.dump(asset_selection_guidance, f, indent=4)
     pair_guideline_context = None
     if getattr(args, "use_pair_guidelines", False):
         pair_guidelines_path = Path(getattr(args, "pair_guidelines_path", ""))
@@ -770,78 +976,37 @@ def generate_slide_plan(
     template =  jinja_env.from_string(prompt_cfg["template"]) 
     in_tok, out_tok, time_taken = 0, 0, 0.0
     slide_plan: Dict[str, Any]
-    anchor_plan_source: str | None = None
+    draft_plan_source = "direct_personalized_planner" if getattr(args, "use_author_preferences", False) and author_preference_profile else "direct_planner"
 
-    if getattr(args, "use_author_preferences", False) and author_preference_profile:
-        slide_plan, anchor_plan_source = load_existing_anchor_plan(args)
-        if slide_plan is None:
-            anchor_prompt = render_planner_prompt(
-                template=template,
-                raw_json=raw_json,
-                figures_json=figures_json,
-                formulas_json=formulas_json,
-                images=images,
-                tables=tables,
-                use_author_preferences=False,
-                author_preference_profile=None,
-                use_pair_guidelines=False,
-                pair_guidelines=None,
-            )
-            anchor_raw_text, anchor_in_tok, anchor_out_tok, anchor_time_taken = call_layout_model(
-                anchor_prompt,
-                prompt_cfg['system_prompt'],
-                args=args,
-                cfg=cfg,
-                use_gpt5_responses=use_gpt5_responses,
-                client=client if use_gpt5_responses else None,
-                agent=agent if not use_gpt5_responses else None,
-            )
-            print(f"[layout-anchor] tokens: in={anchor_in_tok} out={anchor_out_tok}")
-            print("anchor_time_taken:", anchor_time_taken)
-            slide_plan = get_json_from_response(anchor_raw_text)
-            in_tok += anchor_in_tok
-            out_tok += anchor_out_tok
-            time_taken += anchor_time_taken
-            anchor_plan_source = "generated_internal_anchor"
-            anchor_plan_path = slide_plan_path_for(
-                args.paper_name,
-                args.model_name_t,
-                args.model_name_v,
-                anchor_variant_suffix(args),
-            )
-            anchor_plan_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(anchor_plan_path, 'w', encoding="utf-8") as f:
-                json.dump(slide_plan, f, indent=4)
-        else:
-            print(f"[layout-anchor] reusing anchor plan from {anchor_plan_source}")
-    else:
-        planner_prompt = render_planner_prompt(
-            template=template,
-            raw_json=raw_json,
-            figures_json=figures_json,
-            formulas_json=formulas_json,
-            images=images,
-            tables=tables,
-            use_author_preferences=getattr(args, "use_author_preferences", False),
-            author_preference_profile=author_preference_profile,
-            use_pair_guidelines=getattr(args, "use_pair_guidelines", False),
-            pair_guidelines=pair_guideline_context,
-        )
-        raw_text, fresh_in_tok, fresh_out_tok, fresh_time_taken = call_layout_model(
-            planner_prompt,
-            prompt_cfg['system_prompt'],
-            args=args,
-            cfg=cfg,
-            use_gpt5_responses=use_gpt5_responses,
-            client=client if use_gpt5_responses else None,
-            agent=agent if not use_gpt5_responses else None,
-        )
-        print(f"[layout-agent] tokens: in={fresh_in_tok} out={fresh_out_tok}")
-        print("time_taken:",fresh_time_taken)
-        slide_plan = get_json_from_response(raw_text)
-        in_tok += fresh_in_tok
-        out_tok += fresh_out_tok
-        time_taken += fresh_time_taken
+    planner_prompt = render_planner_prompt(
+        template=template,
+        raw_json=raw_json,
+        figures_json=figures_json,
+        formulas_json=formulas_json,
+        images=images,
+        tables=tables,
+        use_author_preferences=getattr(args, "use_author_preferences", False),
+        author_preference_profile=author_preference_profile,
+        asset_selection_guidance=asset_selection_guidance,
+        use_pair_guidelines=getattr(args, "use_pair_guidelines", False),
+        pair_guidelines=pair_guideline_context,
+    )
+    raw_text, fresh_in_tok, fresh_out_tok, fresh_time_taken = call_layout_model(
+        planner_prompt,
+        prompt_cfg['system_prompt'],
+        args=args,
+        cfg=cfg,
+        use_gpt5_responses=use_gpt5_responses,
+        client=client if use_gpt5_responses else None,
+        agent=agent if not use_gpt5_responses else None,
+    )
+    print(f"[layout-agent] tokens: in={fresh_in_tok} out={fresh_out_tok}")
+    print("time_taken:",fresh_time_taken)
+    slide_plan = get_json_from_response(raw_text)
+    slide_plan = sanitize_slide_plan_templates(slide_plan)
+    in_tok += fresh_in_tok
+    out_tok += fresh_out_tok
+    time_taken += fresh_time_taken
 
     plan_debug_path = (
         f'contents/{args.paper_name}/'
@@ -853,7 +1018,7 @@ def generate_slide_plan(
     if getattr(args, "use_author_preferences", False) and author_preference_profile:
         draft_summary = summarize_slide_plan(slide_plan)
         repair_directives = build_repair_directives(author_preference_profile, draft_summary, asset_support)
-        if repair_directives["needs_repair"]:
+        if repair_directives["needs_repair"] and isinstance(draft_summary, dict):
             repair_template = jinja_env.from_string(prompt_cfg["repair_template"])
             repair_prompt = repair_template.render(
                 raw_result_json=raw_json,
@@ -866,8 +1031,9 @@ def generate_slide_plan(
                 priority_metrics_json=repair_directives.get("priority_metrics", []),
                 edit_brief_json=repair_directives.get("edit_brief", []),
                 actionable_targets_json=repair_directives.get("actionable_targets", []),
+                asset_selection_guidance_json=asset_selection_guidance,
                 current_slide_plan_json=slide_plan,
-                anchor_plan_source=anchor_plan_source or "generated_internal_anchor",
+                anchor_plan_source=draft_plan_source,
             )
             repair_raw_text, repair_in_tok, repair_out_tok, repair_time_taken = call_layout_model(
                 repair_prompt,
@@ -881,6 +1047,7 @@ def generate_slide_plan(
             print(f"[layout-repair] tokens: in={repair_in_tok} out={repair_out_tok}")
             print("repair_time_taken:", repair_time_taken)
             repaired_plan = get_json_from_response(repair_raw_text)
+            repaired_plan = sanitize_slide_plan_templates(repaired_plan)
             repaired_summary = summarize_slide_plan(repaired_plan)
             repaired_directives = build_repair_directives(author_preference_profile, repaired_summary, asset_support)
             acceptance = evaluate_repair_acceptance(
@@ -894,7 +1061,7 @@ def generate_slide_plan(
                 f'<{args.model_name_t}_{args.model_name_v}>_slide_plan_repair_report{plan_variant_suffix(args)}.json'
             )
             repair_report = {
-                "anchor_plan_source": anchor_plan_source or "generated_internal_anchor",
+                "anchor_plan_source": draft_plan_source,
                 "draft_summary": draft_summary,
                 "draft_repair_directives": repair_directives,
                 "repaired_summary": repaired_summary,

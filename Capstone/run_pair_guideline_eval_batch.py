@@ -17,11 +17,28 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Capstone.generate_random_decks import append_outline_mode_suffix, output_dir_key, resolve_cli_path
-from Capstone.pair_guidelines import infer_output_key_from_paper_path, output_key_from_paper_id
 
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def output_key_from_paper_id(paper_id: str | None) -> str | None:
+    if not paper_id:
+        return None
+    key = str(paper_id).strip().replace(":", "_")
+    key = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in key)
+    key = key.strip("_")
+    return key or None
+
+
+def infer_output_key_from_paper_path(paper_path: str) -> str:
+    path = Path(paper_path)
+    if path.parent.name and path.parent.name.isdigit():
+        split = path.parent.parent.name or "paper"
+        return f"{split}_{path.parent.name}"
+    stem = path.stem.replace(" ", "_")
+    return stem or "paper"
 
 
 def contents_name_for_manifest_item(item: dict[str, Any], outline_mode: str) -> str:
@@ -51,6 +68,36 @@ def pair_context_path(*, item: dict[str, Any]) -> Path:
     paper_path = str(item["paper_path"])
     target_key = output_key_from_paper_id(paper_id) or infer_output_key_from_paper_path(paper_path)
     return PROJECT_ROOT / "Capstone" / "pair_guideline_contexts" / author_id / f"{target_key}.json"
+
+
+def build_pair_context_command(
+    *,
+    item: dict[str, Any],
+    model_name_t: str,
+    max_pairs: int,
+    candidate_pool: int,
+    force_refresh: bool,
+) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "Capstone.pair_guidelines",
+        "--author-id",
+        str(item["author_id"]),
+        "--target-paper-path",
+        str(item["paper_path"]),
+        "--target-paper-id",
+        str(item["paper_id"]),
+        "--model",
+        model_name_t,
+        "--max-pairs",
+        str(max_pairs),
+        "--candidate-pool",
+        str(candidate_pool),
+    ]
+    if force_refresh:
+        command.append("--force-refresh")
+    return command
 
 
 def build_eval_command(
@@ -168,6 +215,16 @@ def main() -> None:
         action="store_true",
         help="If a baseline plan is missing, run the baseline SlideGen pipeline first using cached parse artifacts.",
     )
+    parser.add_argument(
+        "--generate-missing-pair-contexts",
+        action="store_true",
+        help="If a pair-guideline context JSON is missing, build it from the manifest item before evaluation.",
+    )
+    parser.add_argument(
+        "--force-refresh-pair-contexts",
+        action="store_true",
+        help="Regenerate pair-guideline contexts even if they already exist when building missing contexts.",
+    )
     parser.add_argument("--include-existing", action="store_true", help="Re-evaluate reports even if they already exist.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -189,6 +246,8 @@ def main() -> None:
     model_name_t = str(manifest.get("model_name_t") or "gpt-5.4-nano")
     model_name_v = str(manifest.get("model_name_v") or "gpt-5.4-nano")
     formula_mode = int(manifest.get("formula_mode") or 1)
+    pair_guideline_max_pairs = int(manifest.get("pair_guideline_max_pairs") or 2)
+    pair_guideline_candidate_pool = int(manifest.get("pair_guideline_candidate_pool") or 5)
 
     eval_dir = args.eval_dir or (args.manifest.parent / "eval")
     eval_dir.mkdir(parents=True, exist_ok=True)
@@ -223,6 +282,22 @@ def main() -> None:
                 outline_mode=outline_mode,
             )
             run_command(baseline_command, cwd=PROJECT_ROOT, dry_run=args.dry_run)
+
+        context_path = pair_context_path(item=item)
+        if not context_path.exists():
+            if not args.generate_missing_pair_contexts:
+                raise SystemExit(
+                    f"Missing pair-guideline context for {paper_id}: {context_path}\n"
+                    "Rerun with --generate-missing-pair-contexts to create it first."
+                )
+            pair_context_command = build_pair_context_command(
+                item=item,
+                model_name_t=model_name_t,
+                max_pairs=pair_guideline_max_pairs,
+                candidate_pool=pair_guideline_candidate_pool,
+                force_refresh=args.force_refresh_pair_contexts,
+            )
+            run_command(pair_context_command, cwd=PROJECT_ROOT, dry_run=args.dry_run)
 
         command = build_eval_command(
             item=item,

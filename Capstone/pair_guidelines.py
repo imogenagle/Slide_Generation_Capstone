@@ -471,6 +471,9 @@ def main() -> None:
     parser.add_argument("--author-id", required=True, help="Canonical author_id from Capstone/author_tables/authors.csv")
     parser.add_argument("--target-paper-path", required=True, help="PDF path for the paper you want to personalize.")
     parser.add_argument("--target-paper-id", default=None, help="Optional paper_id if known.")
+    parser.add_argument("--authors-csv", type=Path, default=DEFAULT_AUTHORS_CSV)
+    parser.add_argument("--paper-authors-csv", type=Path, default=DEFAULT_PAPER_AUTHORS_CSV)
+    parser.add_argument("--papers-csv", type=Path, default=DEFAULT_PAPERS_CSV)
     parser.add_argument("--model", default="4o-mini", help="Model name or deployment alias.")
     parser.add_argument("--max-pairs", type=int, default=2, help="How many prior paper/deck pairs to use.")
     parser.add_argument(
@@ -489,6 +492,9 @@ def main() -> None:
         args.author_id,
         target_paper_path=args.target_paper_path,
         target_paper_id=args.target_paper_id,
+        authors_csv=args.authors_csv,
+        paper_authors_csv=args.paper_authors_csv,
+        papers_csv=args.papers_csv,
         pair_guideline_dir=args.pair_guideline_dir,
         context_dir=args.context_dir,
         prompt_path=args.prompt_path,

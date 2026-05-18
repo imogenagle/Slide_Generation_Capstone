@@ -297,8 +297,21 @@ def configure_variant_args(args: argparse.Namespace) -> tuple[bool, bool]:
 def prepare_author_profile(args: argparse.Namespace, distill_author_profile, detail_log: dict) -> None:
     if not getattr(args, "use_author_preferences", False):
         return
+    if args.author_profile_path:
+        profile_path = Path(args.author_profile_path)
+    else:
+        if not args.author_id:
+            raise ValueError("--author_id is required when --use_author_preferences is enabled without --author_profile_path.")
+        profile_path = Path("Capstone/profiles") / f"{args.author_id}.json"
+
+    if profile_path.exists() and not args.force_refresh_preferences:
+        print(f"[preferences] Reusing existing author profile: {profile_path}", flush=True)
+        args.author_profile_path = str(profile_path)
+        detail_log['author_profile_path'] = args.author_profile_path
+        return
+
     if not args.author_id:
-        raise ValueError("--author_id is required when --use_author_preferences is enabled.")
+        raise ValueError("--author_id is required when regenerating an author preference profile.")
 
     exclude_pdf_paths = set()
     try:
@@ -307,10 +320,6 @@ def prepare_author_profile(args: argparse.Namespace, distill_author_profile, det
         exclude_pdf_paths.add(args.paper_path)
     target_paper_id = find_target_paper_id(args.paper_path)
     exclude_paper_ids = {target_paper_id} if target_paper_id else set()
-    if args.author_profile_path:
-        profile_path = Path(args.author_profile_path)
-    else:
-        profile_path = Path("Capstone/profiles") / f"{args.author_id}.json"
     try:
         print(
             f"[preferences] Starting profile distillation for author_id={args.author_id} "

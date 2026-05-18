@@ -481,11 +481,38 @@ def _header_font_size(text: str) -> int:
     return 16
 
 
+def _normalize_bullets(raw_bullets) -> list[dict]:
+    normalized: list[dict] = []
+    for bullet in (raw_bullets or []):
+        if isinstance(bullet, dict):
+            raw_text = str(bullet.get("text") or "").strip()
+            raw_sub = bullet.get("sub") or []
+            if not isinstance(raw_sub, list):
+                raw_sub = [raw_sub]
+            sub_items = [str(item).strip() for item in raw_sub if str(item).strip()]
+
+            # Some plans emit {"sub": [...]} without a top-level text field.
+            # Promote the first sub-bullet to the main bullet so rendering can continue.
+            if not raw_text and sub_items:
+                raw_text = sub_items[0]
+                sub_items = sub_items[1:]
+
+            if raw_text or sub_items:
+                normalized.append({"text": raw_text, "sub": sub_items})
+            continue
+
+        text = str(bullet).strip()
+        if text:
+            normalized.append({"text": text, "sub": []})
+    return normalized
+
+
 def _body_font_sizes(slide_info: Dict) -> tuple[int, int]:
-    bullet_count = len(slide_info.get("bullets") or [])
-    sub_count = sum(len(b.get("sub") or []) for b in (slide_info.get("bullets") or []))
-    total_chars = sum(len((b.get("text") or "").strip()) for b in (slide_info.get("bullets") or []))
-    total_chars += sum(len(str(s).strip()) for b in (slide_info.get("bullets") or []) for s in (b.get("sub") or []))
+    bullets = _normalize_bullets(slide_info.get("bullets") or [])
+    bullet_count = len(bullets)
+    sub_count = sum(len(b.get("sub") or []) for b in bullets)
+    total_chars = sum(len((b.get("text") or "").strip()) for b in bullets)
+    total_chars += sum(len(str(s).strip()) for b in bullets for s in (b.get("sub") or []))
     visual_count = len(slide_info.get("images") or []) + len(slide_info.get("tables") or []) + len(slide_info.get("formulas") or [])
 
     lvl0, lvl1 = 24, 22
@@ -1285,7 +1312,7 @@ def _fill_bullets(
         max_size_pt = min(max(lvl0_size, lvl1_size) + 4.0, 28.0)
     _clear_text_frame(tf)
     _compact_text_frame(tf)
-    for b in (bullets or []):
+    for b in _normalize_bullets(bullets):
         p = tf.paragraphs[0] if len(tf.paragraphs) == 1 and not tf.paragraphs[0].text else tf.add_paragraph()
         p.text = (b.get("text") or "").strip()
         p.level = 0
@@ -1590,13 +1617,14 @@ def generate_pptx_from_plan(
             _clear_text_frame(tf)
             tf.word_wrap = True
             lvl0_size, lvl1_size = _body_font_sizes(slide_info)
+            bullets = _normalize_bullets(slide_info.get("bullets") or [])
             # if tf.paragraphs:
             #     tf.paragraphs[0].text = ""   
             # else:
             #     tf.clear() 
-            for bullet in slide_info["bullets"]:
+            for bullet in bullets:
                 p = tf.paragraphs[0] if len(tf.paragraphs) == 1 and not tf.paragraphs[0].text else tf.add_paragraph()
-                p.text, p.level = bullet["text"], 0
+                p.text, p.level = bullet.get("text", ""), 0
                 _set_paragraph_font_size(p, lvl0_size)
                 for sub in bullet.get("sub", []):
                     sp = tf.add_paragraph()
