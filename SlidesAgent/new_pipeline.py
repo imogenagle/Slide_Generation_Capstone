@@ -179,7 +179,7 @@ def _import_pipeline_modules():
     }
 
 
-def build_arg_parser(*, description: str = 'Poster Generation Pipeline', include_pair_guideline_args: bool = False) -> argparse.ArgumentParser:
+def build_arg_parser(*, description: str = 'Poster Generation Pipeline') -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--paper_path', type=str)
     parser.add_argument('--model_name_t', type=str, default='4o')
@@ -238,52 +238,17 @@ def build_arg_parser(*, description: str = 'Poster Generation Pipeline', include
         action='store_true',
         help='Regenerate the author profile even if a cached profile JSON already exists.',
     )
-    if include_pair_guideline_args:
-        parser.add_argument(
-            '--pair_guidelines_path',
-            type=str,
-            default=None,
-            help='Optional path to an existing target-specific pair-guideline context JSON.',
-        )
-        parser.add_argument(
-            '--pair_guideline_model',
-            type=str,
-            default=None,
-            help='Model used to generate pair-guideline contexts. Defaults to --model_name_t.',
-        )
-        parser.add_argument(
-            '--pair_guideline_max_pairs',
-            type=int,
-            default=2,
-            help='How many prior paper/deck pairs to include in the experimental pair-guideline context.',
-        )
-        parser.add_argument(
-            '--pair_guideline_candidate_pool',
-            type=int,
-            default=5,
-            help='How many candidate prior pairs to consider before selecting the top experimental references.',
-        )
-        parser.add_argument(
-            '--force_refresh_pair_guidelines',
-            action='store_true',
-            help='Regenerate the pair-guideline context even if a cached JSON already exists.',
-        )
     return parser
 
 
-def configure_variant_args(args: argparse.Namespace) -> tuple[bool, bool]:
+def configure_variant_args(args: argparse.Namespace) -> bool:
     if getattr(args, "preference_model", None) is None:
         args.preference_model = args.model_name_t
-    if getattr(args, "use_pair_guidelines", False) and getattr(args, "pair_guideline_model", None) is None:
-        args.pair_guideline_model = args.model_name_t
 
     requested_personalized = bool(getattr(args, "use_author_preferences", False))
-    requested_pair_guidelines = bool(getattr(args, "use_pair_guidelines", False))
 
     if not getattr(args, "output_variant_suffix", None):
-        if requested_pair_guidelines:
-            args.output_variant_suffix = "_pair_guidelines"
-        elif requested_personalized:
+        if requested_personalized:
             args.output_variant_suffix = "_personalized"
         else:
             args.output_variant_suffix = "_baseline"
@@ -291,7 +256,7 @@ def configure_variant_args(args: argparse.Namespace) -> tuple[bool, bool]:
     if not hasattr(args, "output_folder_suffix") or args.output_folder_suffix is None:
         args.output_folder_suffix = "_personalized" if requested_personalized else ""
 
-    return requested_personalized, requested_pair_guidelines
+    return requested_personalized
 
 
 def prepare_author_profile(args: argparse.Namespace, distill_author_profile, detail_log: dict) -> None:
@@ -348,69 +313,9 @@ def prepare_author_profile(args: argparse.Namespace, distill_author_profile, det
         detail_log['author_preferences_fallback_reason'] = str(exc)
 
 
-def prepare_pair_guideline_context(args: argparse.Namespace, detail_log: dict) -> None:
-    if not getattr(args, "use_pair_guidelines", False):
-        return
-    if not args.author_id:
-        raise ValueError("--author_id is required when experimental pair guidelines are enabled.")
-
-    from Capstone.pair_guidelines import (
-        DEFAULT_CONTEXT_DIR,
-        build_pair_guideline_context,
-        infer_output_key_from_paper_path,
-        output_key_from_paper_id,
-    )
-
-    target_paper_id = find_target_paper_id(args.paper_path)
-    if args.pair_guidelines_path:
-        context_path = Path(args.pair_guidelines_path)
-    else:
-        target_key = output_key_from_paper_id(target_paper_id) or infer_output_key_from_paper_path(args.paper_path)
-        context_path = DEFAULT_CONTEXT_DIR / args.author_id / f"{target_key}.json"
-    if context_path.exists() and not getattr(args, "force_refresh_pair_guidelines", False):
-        print(f"[pair-guidelines] Reusing cached context: {context_path}", flush=True)
-        args.pair_guidelines_path = str(context_path)
-        detail_log['pair_guidelines_path'] = args.pair_guidelines_path
-        try:
-            cached_context = json.loads(context_path.read_text(encoding="utf-8"))
-            detail_log['pair_guideline_reference_pair_ids'] = cached_context.get("reference_pair_ids", [])
-        except Exception:
-            pass
-        return
-    context_root = context_path.parent.parent if context_path.parent.name == args.author_id else context_path.parent
-    try:
-        print(
-            f"[pair-guidelines] Starting context build for author_id={args.author_id} "
-            f"(force_refresh={getattr(args, 'force_refresh_pair_guidelines', False)}, "
-            f"max_pairs={getattr(args, 'pair_guideline_max_pairs', 2)})",
-            flush=True,
-        )
-        context = build_pair_guideline_context(
-            args.author_id,
-            target_paper_path=args.paper_path,
-            target_paper_id=target_paper_id,
-            context_dir=context_root,
-            max_pairs=getattr(args, "pair_guideline_max_pairs", 2),
-            candidate_pool=getattr(args, "pair_guideline_candidate_pool", 5),
-            model=getattr(args, "pair_guideline_model", args.model_name_t),
-            force_refresh=getattr(args, "force_refresh_pair_guidelines", False),
-        )
-        print(f"[pair-guidelines] Context ready: {context_path}", flush=True)
-        context_path.write_text(json.dumps(context, indent=2, ensure_ascii=False), encoding="utf-8")
-        args.pair_guidelines_path = str(context_path)
-        detail_log['pair_guidelines_path'] = args.pair_guidelines_path
-        detail_log['pair_guideline_reference_pair_ids'] = context.get("reference_pair_ids", [])
-    except ValueError as exc:
-        print(f"[pair-guidelines] {exc}")
-        print("[pair-guidelines] No eligible reference pairs remain; falling back to non-pair-guided planning.")
-        args.use_pair_guidelines = False
-        args.pair_guidelines_path = None
-        detail_log['pair_guideline_fallback_reason'] = str(exc)
-
-
 def run_pipeline(args: argparse.Namespace) -> None:
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-    requested_personalized, requested_pair_guidelines = configure_variant_args(args)
+    requested_personalized = configure_variant_args(args)
 
     if args.formula_mode == 1:
         print("👉 Using Docling bbox crop method...")
@@ -462,14 +367,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
     print(f'slides size: {slide_width_inches} x {slide_height_inches} inches')
 
     prepare_author_profile(args, distill_author_profile, detail_log)
-    prepare_pair_guideline_context(args, detail_log)
 
     args.paper_name = append_output_folder_suffix(args.paper_name, getattr(args, "output_folder_suffix", ""))
     detail_log['output_paper_name'] = args.paper_name
     detail_log['requested_personalized_run'] = requested_personalized
-    detail_log['requested_pair_guideline_run'] = requested_pair_guidelines
     detail_log['effective_use_author_preferences'] = getattr(args, "use_author_preferences", False)
-    detail_log['effective_use_pair_guidelines'] = getattr(args, "use_pair_guidelines", False)
 
     figs_json_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_figures.json"
     formula_json_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_formula_match.json"

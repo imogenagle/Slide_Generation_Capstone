@@ -407,12 +407,6 @@ def parse_raw(args, actor_config, version=1):
         if profile_path and Path(profile_path).exists():
             print(f"[parse_raw] Loading author profile from {profile_path}", flush=True)
             author_preference_profile = json.loads(Path(profile_path).read_text(encoding="utf-8"))
-    pair_guideline_context = None
-    if getattr(args, "use_pair_guidelines", False):
-        pair_guidelines_path = getattr(args, "pair_guidelines_path", None)
-        if pair_guidelines_path and Path(pair_guidelines_path).exists():
-            print(f"[parse_raw] Loading pair-guideline context from {pair_guidelines_path}", flush=True)
-            pair_guideline_context = json.loads(Path(pair_guidelines_path).read_text(encoding="utf-8"))
     use_gpt5_responses = False
 
     actor_sys_msg = 'You are the author of the paper, and you will create an academic presentation (slides) to explain the paper'
@@ -456,8 +450,6 @@ def parse_raw(args, actor_config, version=1):
             outline_mode=outline_mode,
             use_author_preferences=getattr(args, "use_author_preferences", False),
             author_preference_profile_json=author_preference_profile,
-            use_pair_guidelines=getattr(args, "use_pair_guidelines", False),
-            pair_guidelines_json=pair_guideline_context,
         )
         print(
             f"[parse_raw] Sending outline request to model={args.model_name_t}",

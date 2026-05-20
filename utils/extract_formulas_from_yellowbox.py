@@ -3,10 +3,6 @@ import fitz  # PyMuPDF
 import cv2
 import os
 import numpy as np
-import pandas as pd
-from pathlib import Path
-import cv2
-import numpy as np
  
 
 def render_pdf_to_images(pdf_path: str, output_folder: str, dpi: int = 300):

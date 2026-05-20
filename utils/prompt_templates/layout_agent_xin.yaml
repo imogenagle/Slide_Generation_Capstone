@@ -3,7 +3,7 @@ system_prompt: |
   Your ONLY task: return a single valid JSON object matching EXACTLY the schema below.
   Do NOT include explanations, summaries, markdown code fences, or natural language.
   
-  The PowerPoint canvas is **fixed at 13.3 in * 7.5 in** (16:9). You receive five required JSON blobs and up to three optional personalization / guidance blobs:
+  The PowerPoint canvas is **fixed at 13.3 in * 7.5 in** (16:9). You receive five required JSON blobs and up to one optional personalization blob:
   1. **raw_result.json** - hierarchical summary of the paper.  Structure:
   2. **figures.json** - list of sections → subsections → visual assets.  Example (keys may vary by paper):
     *Each `imageN` or `tableN` value is an index that maps to an image/table file name (`image_2.png`, `table_1.png`, etc.).*
@@ -11,9 +11,6 @@ system_prompt: |
   4. **image_dims.json**  - pixel dimensions for every `image_*.png` 
   5. **table_dims.json**  - pixel dimensions for every `table_*.png` 
   6. **author_preference_profile.json** - optional distilled planning preferences from prior user history
-  7. **pair_guideline_context.json** - optional experimental guidance distilled from prior paper-slide pairs for this author
-  8. **asset_selection_guidance.json** - optional concrete asset-choice policy derived from the author profile and the actually extracted assets
-
   Instructions:
   ---
   
@@ -59,7 +56,6 @@ system_prompt: |
   3. **Select visuals** that best support the bullets:  
      • **Formulas** belonging to the same subsection should stay **on the same slide whenever possible**; if more than 2, prefer `T11_3Img_TopTextBottom`.  
      • **Do not crop or distort images** - preserve original aspect ratio (minor scaling to fit is fine).
-     • When `asset_selection_guidance` is present, treat it as the default policy for whether a visual is necessary, which scarce assets to save for stronger slides, and whether a text-only fallback is preferred.
 
   4. **If an author preference profile is provided, actively optimize for it whenever the paper supports multiple reasonable slide plans.**
      • Do not use the profile only as a tie-breaker. Use it as a planning target for section splitting, bullet density, text density, visual density, and template choice.
@@ -111,17 +107,6 @@ system_prompt: |
        - if table preference is `medium` or `high` and the paper has extracted tables for results/evaluation/benchmark/example subsections, you should actively try to place at least one of those tables in the deck unless doing so would clearly hurt legibility or paper fidelity.
        - for quantitative results or comparison subsections, prefer tables over decorative or redundant figures when the table directly carries the evidence.
        - if formula preference is `medium` or `high` but the extracted formula asset list for this paper is empty, do not invent formulas; instead satisfy the profile through other available structural and visual signals.
-     • `asset_selection_guidance`
-       - treat this as a concrete default asset-selection policy after hard template validity rules and paper fidelity.
-       - follow `quantitative_slide_evidence_priority` when choosing between tables, figures, and text-only layouts for results/evaluation/comparison slides.
-       - follow `overview_slide_evidence_priority` when choosing visuals for motivation, overview, or mechanism slides.
-       - if `avoid_optional_figures` is `true`, default to text-only or table-backed slides unless an extracted figure materially carries the subsection’s main claim.
-       - if `avoid_optional_tables` is `true`, do not place a table unless it communicates evidence more clearly than text alone.
-       - if `reserve_scarce_tables_for_quantitative_slides` is `true`, save scarce tables for the strongest quantitative slides instead of spending them on peripheral material.
-       - if `reserve_scarce_figures_for_core_explanatory_slides` is `true`, save scarce figures for the core mechanism / pipeline / overview slides where they materially clarify the paper.
-       - if `prefer_formula_capable_layouts_when_supported` is `true`, use formula-capable templates only on slides whose `formulas` list is actually non-empty.
-       - if `compensate_for_missing_formulas_with_density` is `true`, express technicality through denser bullets, stronger evidence usage, and fewer unnecessary slide splits rather than weak substitute visuals.
-       - treat the `notes` list inside `asset_selection_guidance` as explicit reminders of the author-specific asset policy for this deck.
      • `layout_bias`
        - if it includes `multi_visual`, prefer multi-visual templates when the subsection genuinely has enough supporting assets and legibility is preserved.
        - if it includes `formula_capable`, prefer formula-capable templates whenever formulas are available for that subsection.
@@ -149,22 +134,7 @@ system_prompt: |
      • If `text_density_preference` is `low` or `visual_density_preference` is `low`, actively suppress non-essential visuals and keep slides simpler rather than using every available asset.
      • If `text_density_preference` is `medium` or `low`, do not inflate detail by converting every main bullet into multiple sub-bullets unless the profile clearly calls for dense explanatory nesting.
      • If table preference is `medium` or `high` and extracted tables exist, treat a deck with zero or minimal table use as suspicious unless the matched subsections truly do not support table placement.
-     • If `asset_selection_guidance.default_visual_fallback` is `text_only`, treat non-essential visuals as suspicious and remove them unless they materially improve comprehension.
-     • If `asset_selection_guidance.default_visual_fallback` is `table_then_text`, prefer evidence-bearing tables over decorative figures on technical slides before falling back to image-heavy layouts.
      • If scarce assets are present, spend them on the slides with the highest communication value first rather than distributing them evenly across the deck.
-
-  7. **If `pair_guideline_context` is provided, use it as transformation-style evidence from prior paper-slide pairs.**
-     • Use it primarily for narrative flow, which paper components deserve dedicated slides, which ones are typically compressed, and what kinds of slide roles appear in the deck.
-     • Favor recurring patterns across the reference pairs over one-off quirks from a single example.
-     • Never copy factual claims, images, formulas, or topic-specific content from the reference pairs into the target deck.
-     • Treat `presentation_guidelines.narrative_flow_preferences`, `section_emphasis_patterns`, `content_style_preferences`, `compression_patterns`, and `visual_usage_patterns` as the most actionable signals.
-     • Treat `planning_hints` as coarse supporting evidence when it agrees with the pair-level qualitative guidance.
-
-  8. **If both `author_preference_profile` and `pair_guideline_context` are present, combine them carefully.**
-     • Use `pair_guideline_context` for structure, story order, section emphasis, and compression choices.
-     • Use `author_preference_profile` for deck-level numeric balance and layout-frequency tendencies.
-     • If they conflict, stay paper-faithful first; then prefer the pair-guideline signal for structure and the profile signal for coarse density.
-
 
 template: |
  
@@ -232,22 +202,6 @@ template: |
   author_preference_profile:
   null
   {% endif %}
-  {% if use_author_preferences %}
-  asset_selection_guidance:
-  {{ asset_selection_guidance_json }}
-  {% else %}
-  asset_selection_guidance:
-  {}
-  {% endif %}
-  {% if use_pair_guidelines %}
-  pair_guideline_context:
-  {{ pair_guidelines_json }}
-  {% else %}
-  pair_guideline_context:
-  null
-  {% endif %}
-
-
 repair_system_prompt: |
   You are SlidePlanRepairer.
   Your ONLY task is to revise an existing slide-plan JSON so it better matches the provided author preference profile and numeric targets.
@@ -268,10 +222,6 @@ repair_template: |
   - You may merge thin adjacent slides, split overloaded slides, swap templates, rebalance bullets, and move available visuals between nearby slides when the source evidence supports it.
   - If slide count is a top actionable target, you are explicitly allowed to merge adjacent thin slides or split overloaded slides to move toward the target range.
   - If low visual density or `text_only` layout bias is part of the profile target, you are explicitly allowed to remove non-essential visuals from slides that remain faithful without them.
-  - Treat `asset_selection_guidance` as the default policy for keeping, removing, or swapping visuals while repairing the draft.
-  - If `asset_selection_guidance` says to avoid optional figures, remove weak figures before rewriting the slide’s textual substance.
-  - If `asset_selection_guidance` says to reserve scarce tables for quantitative slides, move those tables onto stronger evidence slides before introducing generic figures elsewhere.
-  - If formulas are unavailable but the profile wants a technical style, compensate by improving density and quantitative evidence on existing slides rather than adding extra fragmented slides.
   - If bullet or text density is too high because of nested explanations, reduce sub-bullet sprawl before changing paper coverage.
   - If a numeric target cannot be satisfied because the paper lacks supporting material, move closer to target without hallucinating support.
   - Treat the provided `repair_directives` as the highest-priority guidance after paper fidelity.
@@ -291,9 +241,6 @@ repair_template: |
 
   Author preference profile:
   {{ author_preference_profile_json }}
-
-  Asset selection guidance:
-  {{ asset_selection_guidance_json }}
 
   Numeric target summary:
   {{ numeric_target_summary_json }}
@@ -325,7 +272,6 @@ jinja_args:
   - formulas_json
   - image_informations_json
   - table_informations_json
-  - asset_selection_guidance_json
   - current_slide_plan_json
   - current_plan_summary_json
   - numeric_target_summary_json

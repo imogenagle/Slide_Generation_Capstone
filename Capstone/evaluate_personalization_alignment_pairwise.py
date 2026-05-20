@@ -16,17 +16,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from Capstone.evaluate_personalization_alignment import (
+from Capstone.personalization_eval_common import (
     SCORE_KEYS,
     apply_dimension_applicability,
     build_numeric_comparison,
-    build_numeric_target_summary,
     call_alignment_judge,
     load_dotenv,
     log,
     summarize_extracted_assets,
-    summarize_slide_plan,
 )
+from SlidesAgent.personalization_targets import build_numeric_target_summary
+from SlidesAgent.slide_plan_summary import summarize_slide_plan
 
 
 DEFAULT_PROMPT_PATH = REPO_ROOT / "utils" / "prompt_templates" / "personalization_alignment_evaluator_pairwise.yaml"

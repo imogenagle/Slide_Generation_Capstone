@@ -9,6 +9,11 @@ from jinja2 import Environment, StrictUndefined
 from utils.src.utils import   get_json_from_response
 from utils.wei_utils import *
 from utils.pptx_utils import extract_text_from_responses
+from SlidesAgent.personalization_targets import (
+    build_numeric_target_summary,
+    profile_target_tolerance_multiplier,
+)
+from SlidesAgent.slide_plan_summary import summarize_slide_plan
 from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 from camel.models import ModelFactory          
 from camel.agents import ChatAgent     
@@ -82,51 +87,6 @@ def load_existing_anchor_plan(args: Any) -> tuple[Dict[str, Any] | None, str | N
     return None, None
 
 
-def mean(values: List[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
-
-
-def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
-def classify_level(value: float, low: float, high: float) -> str:
-    if value < low:
-        return "low"
-    if value < high:
-        return "medium"
-    return "high"
-
-
-def classify_structure(value: float) -> str:
-    if value < 1.5:
-        return "coarse"
-    if value > 2.5:
-        return "fine_grained"
-    return "balanced"
-
-
-def summarize_slide_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
-    slides = list(plan.get("slides") or [])
-    slide_count = len(slides)
-
-    section_order: List[str] = []
-    section_counts: Dict[str, int] = {}
-    bullets_per_slide: List[int] = []
-    words_per_slide: List[int] = []
-    figure_flags: List[int] = []
-    table_flags: List[int] = []
-    formula_flags: List[int] = []
-    layout_bias_counts = {
-        "text_only": 0,
-        "image_right": 0,
-        "image_left": 0,
-        "image_top": 0,
-        "multi_visual": 0,
-        "formula_capable": 0,
-    }
-
-
 def _fallback_template_without_formulas(slide: Dict[str, Any]) -> str:
     image_count = len(slide.get("images") or [])
     table_count = len(slide.get("tables") or [])
@@ -156,82 +116,6 @@ def sanitize_slide_plan_templates(slide_plan: Dict[str, Any]) -> Dict[str, Any]:
             slide["template_id"] = _fallback_template_without_formulas(slide)
     slide_plan["slides"] = slides
     return slide_plan
-
-    for slide in slides:
-        section = str(slide.get("section") or "").strip() or "UNKNOWN"
-        if section not in section_counts:
-            section_order.append(section)
-            section_counts[section] = 0
-        section_counts[section] += 1
-
-        bullets = list(slide.get("bullets") or [])
-        bullets_per_slide.append(len(bullets))
-
-        words = 0
-        for bullet in bullets:
-            if not isinstance(bullet, dict):
-                continue
-            words += len(str(bullet.get("text") or "").split())
-            for sub in bullet.get("sub") or []:
-                words += len(str(sub).split())
-        words_per_slide.append(words)
-
-        image_count = len(slide.get("images") or [])
-        table_count = len(slide.get("tables") or [])
-        formula_count = len(slide.get("formulas") or [])
-        figure_flags.append(1 if image_count > 0 else 0)
-        table_flags.append(1 if table_count > 0 else 0)
-        formula_flags.append(1 if formula_count > 0 else 0)
-
-        template_id = str(slide.get("template_id") or "")
-        if template_id == "T1_TextOnly":
-            layout_bias_counts["text_only"] += 1
-        if "ImageRight" in template_id:
-            layout_bias_counts["image_right"] += 1
-        if "ImageLeft" in template_id:
-            layout_bias_counts["image_left"] += 1
-        if "ImageTop" in template_id:
-            layout_bias_counts["image_top"] += 1
-        if image_count + table_count + formula_count >= 2 or "TwoImages" in template_id or "2x2" in template_id or "3Img" in template_id:
-            layout_bias_counts["multi_visual"] += 1
-        if formula_count > 0:
-            layout_bias_counts["formula_capable"] += 1
-
-    section_count = len(section_order)
-    avg_slides_per_section = (slide_count / section_count) if section_count else 0.0
-
-    def fraction(count: int) -> float:
-        return round((count / slide_count), 4) if slide_count else 0.0
-
-    return {
-        "slide_count": slide_count,
-        "section_count": section_count,
-        "section_titles": section_order,
-        "section_slide_counts": section_counts,
-        "avg_slides_per_section": round(avg_slides_per_section, 3),
-        "section_splitting_estimate": classify_structure(avg_slides_per_section) if section_count else "unknown",
-        "avg_bullets_per_slide": round(mean([float(v) for v in bullets_per_slide]), 3),
-        "avg_words_per_slide": round(mean([float(v) for v in words_per_slide]), 3),
-        "bullet_density_estimate": classify_level(mean([float(v) for v in bullets_per_slide]), 2.0, 4.0) if slides else "unknown",
-        "text_density_estimate": classify_level(mean([float(v) for v in words_per_slide]), 18.0, 38.0) if slides else "unknown",
-        "figure_slide_fraction": round(sum(figure_flags) / slide_count, 4) if slide_count else 0.0,
-        "table_slide_fraction": round(sum(table_flags) / slide_count, 4) if slide_count else 0.0,
-        "formula_slide_fraction": round(sum(formula_flags) / slide_count, 4) if slide_count else 0.0,
-        "text_only_fraction": fraction(layout_bias_counts["text_only"]),
-        "multi_visual_fraction": fraction(layout_bias_counts["multi_visual"]),
-        "formula_capable_fraction": fraction(layout_bias_counts["formula_capable"]),
-        "image_right_fraction": fraction(layout_bias_counts["image_right"]),
-        "image_left_fraction": fraction(layout_bias_counts["image_left"]),
-        "image_top_fraction": fraction(layout_bias_counts["image_top"]),
-        "layout_bias_counts": layout_bias_counts,
-    }
-
-
-def build_numeric_target_summary(author_preference_profile: Dict[str, Any] | None) -> Dict[str, Any]:
-    if not author_preference_profile:
-        return {}
-    numeric = dict(author_preference_profile.get("numeric_preferences") or {})
-    return {key: value for key, value in numeric.items() if value not in (None, [], {}, "")}
 
 
 def _collect_formula_asset_refs(node: Any, found: set[str]) -> None:
@@ -263,137 +147,6 @@ def derive_asset_support(
         "supports_formulas": bool(formula_refs),
         "supports_visual_layout_changes": bool(images) or bool(tables),
     }
-
-
-def derive_asset_selection_guidance(
-    author_preference_profile: Dict[str, Any] | None,
-    *,
-    formulas_json: Dict[str, Any] | List[Any],
-    images: Dict[str, Any],
-    tables: Dict[str, Any],
-) -> Dict[str, Any]:
-    if not author_preference_profile:
-        return {}
-
-    planning = dict(author_preference_profile.get("planning_preferences") or {})
-    numeric = build_numeric_target_summary(author_preference_profile)
-    figure_pref = str(planning.get("figure_usage_preference") or "").strip().lower()
-    table_pref = str(planning.get("table_usage_preference") or "").strip().lower()
-    formula_pref = str(planning.get("formula_usage_preference") or "").strip().lower()
-    visual_pref = str(planning.get("visual_density_preference") or "").strip().lower()
-    text_pref = str(planning.get("text_density_preference") or "").strip().lower()
-    layout_bias = {str(value).strip().lower() for value in (planning.get("layout_bias") or [])}
-
-    formula_refs: set[str] = set()
-    _collect_formula_asset_refs(formulas_json, formula_refs)
-    image_count = len(images) if isinstance(images, dict) else len(images or [])
-    table_count = len(tables) if isinstance(tables, dict) else len(tables or [])
-    formula_count = len(formula_refs)
-
-    low_visual_text_led = (
-        "text_only" in layout_bias
-        or visual_pref == "low"
-        or (figure_pref == "low" and table_pref in {"", "low"})
-    )
-    technical_evidence_heavy = (
-        formula_pref in {"medium", "high"}
-        or table_pref in {"medium", "high"}
-        or "formula_capable" in layout_bias
-    )
-
-    guidance: Dict[str, Any] = {
-        "profile_asset_mode": (
-            "low_visual_text_led"
-            if low_visual_text_led
-            else "technical_evidence_heavy"
-            if technical_evidence_heavy
-            else "balanced_visual"
-        ),
-        "available_asset_counts": {
-            "images": image_count,
-            "tables": table_count,
-            "formulas": formula_count,
-        },
-        "avoid_optional_figures": bool(low_visual_text_led or figure_pref == "low"),
-        "avoid_optional_tables": bool(table_pref == "low" and visual_pref == "low"),
-        "prefer_text_only_when_visuals_are_weak": bool(low_visual_text_led),
-        "prioritize_tables_for_quantitative_slides": bool(table_pref in {"medium", "high"} and table_count > 0),
-        "prefer_figures_for_overview_or_mechanism_slides": bool(
-            figure_pref in {"medium", "high"} and image_count > 0 and not low_visual_text_led
-        ),
-        "prefer_formula_capable_layouts_when_supported": bool(
-            formula_pref in {"medium", "high"} and formula_count > 0
-        ),
-        "compensate_for_missing_formulas_with_density": bool(
-            formula_pref in {"medium", "high"} and formula_count == 0
-        ),
-        "reserve_scarce_tables_for_quantitative_slides": bool(
-            table_pref in {"medium", "high"} and 0 < table_count <= 2
-        ),
-        "reserve_scarce_figures_for_core_explanatory_slides": bool(
-            figure_pref in {"medium", "high"} and 0 < image_count <= 2 and not low_visual_text_led
-        ),
-        "default_visual_fallback": (
-            "text_only"
-            if low_visual_text_led
-            else "table_then_text"
-            if technical_evidence_heavy and table_count > 0
-            else "image_then_text"
-        ),
-        "quantitative_slide_evidence_priority": (
-            ["table", "image", "text_only"]
-            if table_pref in {"medium", "high"} and table_count > 0
-            else ["text_only", "table", "image"]
-            if low_visual_text_led
-            else ["image", "table", "text_only"]
-        ),
-        "overview_slide_evidence_priority": (
-            ["text_only", "image", "table"]
-            if low_visual_text_led
-            else ["image", "text_only", "table"]
-        ),
-        "notes": [],
-    }
-
-    notes = guidance["notes"]
-    if guidance["avoid_optional_figures"]:
-        notes.append(
-            "Default to text-only on overview, motivation, and method slides unless an extracted figure is central to the subsection's main claim."
-        )
-    if guidance["avoid_optional_tables"]:
-        notes.append(
-            "Use tables sparingly; do not place a table on a slide unless it clearly communicates evidence better than text alone."
-        )
-    if guidance["prioritize_tables_for_quantitative_slides"]:
-        notes.append(
-            "Reserve extracted tables for evaluation, comparison, benchmark, ablation, or results slides before using generic figures on those quantitative slides."
-        )
-    if guidance["reserve_scarce_tables_for_quantitative_slides"]:
-        notes.append(
-            "Because tables are scarce, do not spend them on peripheral slides; save them for the strongest quantitative evidence slides first."
-        )
-    if guidance["prefer_figures_for_overview_or_mechanism_slides"]:
-        notes.append(
-            "When a figure and text are both plausible, prefer diagrams or figures on mechanism/overview slides if they materially clarify the idea."
-        )
-    if guidance["reserve_scarce_figures_for_core_explanatory_slides"]:
-        notes.append(
-            "Because figures are scarce, spend them on the core mechanism, pipeline, or overview slides where they materially clarify the paper."
-        )
-    if guidance["compensate_for_missing_formulas_with_density"]:
-        notes.append(
-            "When formulas are unavailable, express technical style through denser explanation, stronger results evidence, and better use of available tables/figures rather than extra section splitting."
-        )
-    if text_pref == "high" and table_pref in {"medium", "high"}:
-        notes.append(
-            "For technical profiles, favor denser evidence-heavy slides over adding extra sections when the same content can fit coherently on fewer slides."
-        )
-    if numeric.get("target_fraction_text_only_slides") is not None and low_visual_text_led:
-        notes.append(
-            "Treat the target text-only fraction as an active deck-level goal when deciding whether a visual is truly necessary."
-        )
-
-    return guidance
 
 
 def infer_priority_metric_keys(
@@ -438,13 +191,13 @@ def target_delta_threshold(metric_key: str) -> float:
     return 0.1
 
 
-def is_actionable_mismatch(metric_key: str, asset_support: Dict[str, Any]) -> bool:
+def mismatch_actionability_details(metric_key: str, asset_support: Dict[str, Any]) -> tuple[bool, str]:
     if metric_key == "slide_count":
-        return True
+        return True, "always_actionable"
     if metric_key in {"target_fraction_formula_slides", "target_fraction_formula_capable_slides"}:
-        return asset_support.get("supports_formulas", False)
+        return asset_support.get("supports_formulas", False), "missing_formula_assets"
     if metric_key == "target_fraction_table_slides":
-        return asset_support.get("supports_tables", False)
+        return asset_support.get("supports_tables", False), "missing_table_assets"
     if metric_key in {
         "target_fraction_figure_slides",
         "target_fraction_multi_visual_slides",
@@ -452,8 +205,13 @@ def is_actionable_mismatch(metric_key: str, asset_support: Dict[str, Any]) -> bo
         "target_fraction_image_right_slides",
         "target_fraction_image_left_slides",
     }:
-        return asset_support.get("supports_visual_layout_changes", False)
-    return True
+        return asset_support.get("supports_visual_layout_changes", False), "missing_visual_assets"
+    return True, "always_actionable"
+
+
+def is_actionable_mismatch(metric_key: str, asset_support: Dict[str, Any]) -> bool:
+    actionable, _ = mismatch_actionability_details(metric_key, asset_support)
+    return actionable
 
 
 def select_actionable_targets(
@@ -465,7 +223,7 @@ def select_actionable_targets(
     selected: List[Dict[str, Any]] = []
     for mismatch in mismatches:
         metric_key = str(mismatch.get("metric") or "")
-        if not is_actionable_mismatch(metric_key, asset_support):
+        if not bool(mismatch.get("actionable", is_actionable_mismatch(metric_key, asset_support))):
             continue
         enriched = dict(mismatch)
         enriched["minimum_delta"] = target_delta_threshold(metric_key)
@@ -539,14 +297,25 @@ def build_repair_directives(
     numeric = build_numeric_target_summary(author_preference_profile)
     priority_metric_keys = infer_priority_metric_keys(author_preference_profile, numeric)
     asset_support = asset_support or {}
+    tolerance_multiplier = profile_target_tolerance_multiplier(author_preference_profile)
     mismatches: List[Dict[str, Any]] = []
     goals: List[str] = []
+    blocked_goals: List[str] = []
     metric_goals: Dict[str, str] = {}
     metric_mismatch_scores: Dict[str, float] = {}
+    blocked_metric_mismatch_scores: Dict[str, float] = {}
     total_mismatch_score = 0.0
+    total_blocked_mismatch_score = 0.0
+
+    actionable_priority_metrics = [
+        metric_key for metric_key in priority_metric_keys if is_actionable_mismatch(metric_key, asset_support)
+    ]
+    blocked_priority_metrics = [
+        metric_key for metric_key in priority_metric_keys if metric_key not in actionable_priority_metrics
+    ]
 
     def record_range_mismatch(key: str, observed: float, allowed_range: List[Any], *, goal_low: str, goal_high: str) -> None:
-        nonlocal total_mismatch_score
+        nonlocal total_mismatch_score, total_blocked_mismatch_score
         if not isinstance(allowed_range, list) or len(allowed_range) != 2:
             return
         try:
@@ -556,58 +325,90 @@ def build_repair_directives(
             return
         if observed < low:
             delta = low - observed
-            total_mismatch_score += delta
-            metric_mismatch_scores[key] = round(delta, 4)
-            metric_goals[key] = goal_low
-            mismatches.append({
+            actionable, blocked_reason = mismatch_actionability_details(key, asset_support)
+            mismatch = {
                 "metric": key,
                 "observed": observed,
                 "target": [low, high],
                 "delta": round(delta, 4),
-                "priority": key in priority_metric_keys,
+                "priority": key in actionable_priority_metrics,
+                "priority_requested": key in priority_metric_keys,
+                "actionable": actionable,
+                "blocked_reason": None if actionable else blocked_reason,
                 "recommended_edit": goal_low,
-            })
-            goals.append(goal_low)
+            }
+            mismatches.append(mismatch)
+            metric_goals[key] = goal_low
+            if actionable:
+                total_mismatch_score += delta
+                metric_mismatch_scores[key] = round(delta, 4)
+                goals.append(goal_low)
+            else:
+                total_blocked_mismatch_score += delta
+                blocked_metric_mismatch_scores[key] = round(delta, 4)
+                blocked_goals.append(goal_low)
         elif observed > high:
             delta = observed - high
-            total_mismatch_score += delta
-            metric_mismatch_scores[key] = round(delta, 4)
-            metric_goals[key] = goal_high
-            mismatches.append({
+            actionable, blocked_reason = mismatch_actionability_details(key, asset_support)
+            mismatch = {
                 "metric": key,
                 "observed": observed,
                 "target": [low, high],
                 "delta": round(delta, 4),
-                "priority": key in priority_metric_keys,
+                "priority": key in actionable_priority_metrics,
+                "priority_requested": key in priority_metric_keys,
+                "actionable": actionable,
+                "blocked_reason": None if actionable else blocked_reason,
                 "recommended_edit": goal_high,
-            })
-            goals.append(goal_high)
+            }
+            mismatches.append(mismatch)
+            metric_goals[key] = goal_high
+            if actionable:
+                total_mismatch_score += delta
+                metric_mismatch_scores[key] = round(delta, 4)
+                goals.append(goal_high)
+            else:
+                total_blocked_mismatch_score += delta
+                blocked_metric_mismatch_scores[key] = round(delta, 4)
+                blocked_goals.append(goal_high)
 
     def record_scalar_mismatch(key: str, observed: float, tolerance: float, goal_low: str, goal_high: str) -> None:
-        nonlocal total_mismatch_score
+        nonlocal total_mismatch_score, total_blocked_mismatch_score
         if key not in numeric:
             return
         try:
             target = float(numeric[key])
         except Exception:
             return
+        effective_tolerance = tolerance * tolerance_multiplier
         delta = observed - target
-        if abs(delta) <= tolerance:
+        if abs(delta) <= effective_tolerance:
             return
-        score = abs(delta) / max(tolerance, 1e-6)
-        total_mismatch_score += score
-        metric_mismatch_scores[key] = round(score, 4)
+        score = abs(delta) / max(effective_tolerance, 1e-6)
         chosen_goal = goal_low if delta < 0 else goal_high
         metric_goals[key] = chosen_goal
-        mismatches.append({
+        actionable, blocked_reason = mismatch_actionability_details(key, asset_support)
+        mismatch = {
             "metric": key,
             "observed": observed,
             "target": target,
             "delta": round(delta, 4),
-            "priority": key in priority_metric_keys,
+            "priority": key in actionable_priority_metrics,
+            "priority_requested": key in priority_metric_keys,
+            "actionable": actionable,
+            "blocked_reason": None if actionable else blocked_reason,
+            "tolerance": round(effective_tolerance, 4),
             "recommended_edit": chosen_goal,
-        })
-        goals.append(chosen_goal)
+        }
+        mismatches.append(mismatch)
+        if actionable:
+            total_mismatch_score += score
+            metric_mismatch_scores[key] = round(score, 4)
+            goals.append(chosen_goal)
+        else:
+            total_blocked_mismatch_score += score
+            blocked_metric_mismatch_scores[key] = round(score, 4)
+            blocked_goals.append(chosen_goal)
 
     record_range_mismatch(
         "slide_count",
@@ -701,7 +502,13 @@ def build_repair_directives(
         "Use top-image layouts less often when they exceed the target layout mix.",
     )
 
-    mismatches.sort(key=lambda item: (not item.get("priority", False), -abs(float(item.get("delta", 0.0)))))
+    mismatches.sort(
+        key=lambda item: (
+            not item.get("actionable", False),
+            not item.get("priority", False),
+            -abs(float(item.get("delta", 0.0))),
+        )
+    )
     actionable_targets = select_actionable_targets(mismatches, asset_support)
 
     deduped_goals: List[str] = []
@@ -709,16 +516,27 @@ def build_repair_directives(
         if goal not in deduped_goals:
             deduped_goals.append(goal)
 
+    deduped_blocked_goals: List[str] = []
+    for goal in blocked_goals:
+        if goal not in deduped_blocked_goals:
+            deduped_blocked_goals.append(goal)
+
     edit_brief = [item["recommended_edit"] for item in actionable_targets]
 
     return {
         "needs_repair": bool(actionable_targets),
         "target_summary": numeric,
         "goals": deduped_goals[:8],
+        "blocked_goals": deduped_blocked_goals[:8],
         "mismatches": mismatches,
         "total_mismatch_score": round(total_mismatch_score, 4),
         "metric_mismatch_scores": metric_mismatch_scores,
-        "priority_metrics": priority_metric_keys,
+        "blocked_total_mismatch_score": round(total_blocked_mismatch_score, 4),
+        "blocked_metric_mismatch_scores": blocked_metric_mismatch_scores,
+        "priority_metrics": actionable_priority_metrics,
+        "blocked_priority_metrics": blocked_priority_metrics,
+        "requested_priority_metrics": priority_metric_keys,
+        "tolerance_multiplier": round(tolerance_multiplier, 4),
         "edit_brief": edit_brief,
         "actionable_targets": actionable_targets,
     }
@@ -745,6 +563,11 @@ def evaluate_repair_acceptance(
     }
     priority_metrics = list(draft_directives.get("priority_metrics") or [])
     actionable_targets = list(draft_directives.get("actionable_targets") or [])
+    actionable_thresholds = {
+        str(target.get("metric") or ""): float(target.get("minimum_delta") or 0.0)
+        for target in actionable_targets
+    }
+    actionable_metric_keys = set(actionable_thresholds)
 
     improved_priority_metrics: List[str] = []
     worsened_priority_metrics: List[str] = []
@@ -773,17 +596,49 @@ def evaluate_repair_acceptance(
         else:
             missed_target_improvements.append(metric_key)
 
+    weighted_total_net_gain = 0.0
+    weighted_priority_net_gain = 0.0
+    weighted_actionable_net_gain = 0.0
+    weighted_regression = 0.0
+    severe_worsened_priority_metrics: List[str] = []
+    metric_keys = sorted(set(draft_metric_scores) | set(repaired_metric_scores))
+    for metric_key in metric_keys:
+        before = draft_metric_scores.get(metric_key, 0.0)
+        after = repaired_metric_scores.get(metric_key, 0.0)
+        delta = before - after
+        if metric_key in actionable_metric_keys:
+            weight = 1.35
+        elif metric_key in priority_metrics:
+            weight = 1.15
+        else:
+            weight = 1.0
+        weighted_total_net_gain += delta * weight
+        if metric_key in priority_metrics:
+            weighted_priority_net_gain += delta * weight
+        if metric_key in actionable_metric_keys:
+            weighted_actionable_net_gain += delta * weight
+        if delta < 0:
+            weighted_regression += (-delta) * weight
+            severe_threshold = max(0.6, actionable_thresholds.get(metric_key, target_delta_threshold(metric_key)) * 0.6)
+            if metric_key in priority_metrics and (-delta) >= severe_threshold:
+                severe_worsened_priority_metrics.append(metric_key)
+
     drift_score = compute_anchor_drift_score(draft_summary, repaired_summary)
     max_allowed_drift = round(max(1.75, draft_score * 0.25), 4) if draft_score > 0 else 1.75
     slide_count_delta = abs(
         float(repaired_summary.get("slide_count", 0.0)) - float(draft_summary.get("slide_count", 0.0))
     )
     max_allowed_slide_count_delta = 3.0
+    required_weighted_net_gain = round(max(0.35, required_improvement * 0.85), 4)
+    max_allowed_weighted_regression = round(max(1.2, score_improvement * 0.75), 4) if score_improvement > 0 else 1.2
 
     accepted = (
         score_improvement >= required_improvement
         and bool(measurable_target_improvements)
-        and not worsened_priority_metrics
+        and weighted_total_net_gain >= required_weighted_net_gain
+        and weighted_priority_net_gain > 0.0
+        and weighted_regression <= max_allowed_weighted_regression
+        and not severe_worsened_priority_metrics
         and drift_score <= max_allowed_drift
         and slide_count_delta <= max_allowed_slide_count_delta
     )
@@ -793,10 +648,22 @@ def evaluate_repair_acceptance(
         reason_parts.append(
             f"repair improvement {score_improvement} did not reach required threshold {required_improvement}"
         )
-    if worsened_priority_metrics:
-        reason_parts.append("worsened priority metrics: " + ", ".join(worsened_priority_metrics))
     if not measurable_target_improvements:
         reason_parts.append("no actionable target improved by its minimum delta")
+    if weighted_total_net_gain < required_weighted_net_gain:
+        reason_parts.append(
+            f"weighted net gain {round(weighted_total_net_gain, 4)} did not reach required threshold {required_weighted_net_gain}"
+        )
+    if weighted_priority_net_gain <= 0.0:
+        reason_parts.append("priority-metric net gain was not positive")
+    if weighted_regression > max_allowed_weighted_regression:
+        reason_parts.append(
+            f"weighted regression {round(weighted_regression, 4)} exceeds threshold {max_allowed_weighted_regression}"
+        )
+    if severe_worsened_priority_metrics:
+        reason_parts.append("severely worsened priority metrics: " + ", ".join(severe_worsened_priority_metrics))
+    elif worsened_priority_metrics:
+        reason_parts.append("some priority metrics worsened but stayed within the allowed tradeoff budget")
     if drift_score > max_allowed_drift:
         reason_parts.append(
             f"repair drift {drift_score} exceeds threshold {max_allowed_drift}"
@@ -814,9 +681,16 @@ def evaluate_repair_acceptance(
         "required_improvement": required_improvement,
         "improved_priority_metrics": improved_priority_metrics,
         "worsened_priority_metrics": worsened_priority_metrics,
+        "severe_worsened_priority_metrics": severe_worsened_priority_metrics,
         "stable_priority_metrics": stable_priority_metrics,
         "measurable_target_improvements": measurable_target_improvements,
         "missed_target_improvements": missed_target_improvements,
+        "weighted_total_net_gain": round(weighted_total_net_gain, 4),
+        "weighted_priority_net_gain": round(weighted_priority_net_gain, 4),
+        "weighted_actionable_net_gain": round(weighted_actionable_net_gain, 4),
+        "weighted_regression": round(weighted_regression, 4),
+        "required_weighted_net_gain": required_weighted_net_gain,
+        "max_allowed_weighted_regression": max_allowed_weighted_regression,
         "drift_score": drift_score,
         "max_allowed_drift": max_allowed_drift,
         "slide_count_delta": slide_count_delta,
@@ -869,9 +743,6 @@ def render_planner_prompt(
     tables: Dict[str, Any],
     use_author_preferences: bool,
     author_preference_profile: Dict[str, Any] | None,
-    asset_selection_guidance: Dict[str, Any] | None,
-    use_pair_guidelines: bool,
-    pair_guidelines: Dict[str, Any] | None,
 ) -> str:
     return template.render(
         raw_result_json=raw_json,
@@ -881,10 +752,19 @@ def render_planner_prompt(
         table_informations_json=tables,
         use_author_preferences=use_author_preferences,
         author_preference_profile_json=author_preference_profile,
-        asset_selection_guidance_json=asset_selection_guidance or {},
-        use_pair_guidelines=use_pair_guidelines,
-        pair_guidelines_json=pair_guidelines,
     )
+
+
+def build_profile_trace(author_preference_profile: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not author_preference_profile:
+        return None
+    return {
+        "author_id": author_preference_profile.get("author_id"),
+        "profile_version": author_preference_profile.get("profile_version"),
+        "distilled_from": author_preference_profile.get("distilled_from"),
+        "planning_preferences": author_preference_profile.get("planning_preferences"),
+        "numeric_preferences": author_preference_profile.get("numeric_preferences"),
+    }
 
 
 def generate_slide_plan(
@@ -916,25 +796,6 @@ def generate_slide_plan(
         if not profile_path.exists():
             raise FileNotFoundError(f"Author preference profile not found: {profile_path}")
         author_preference_profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    asset_selection_guidance = derive_asset_selection_guidance(
-        author_preference_profile,
-        formulas_json=formulas_json,
-        images=images,
-        tables=tables,
-    )
-    if asset_selection_guidance:
-        guidance_debug_path = (
-            f'contents/{args.paper_name}/'
-            f'<{args.model_name_t}_{args.model_name_v}>_asset_selection_guidance{plan_variant_suffix(args)}.json'
-        )
-        with open(guidance_debug_path, 'w', encoding="utf-8") as f:
-            json.dump(asset_selection_guidance, f, indent=4)
-    pair_guideline_context = None
-    if getattr(args, "use_pair_guidelines", False):
-        pair_guidelines_path = Path(getattr(args, "pair_guidelines_path", ""))
-        if not pair_guidelines_path.exists():
-            raise FileNotFoundError(f"Pair-guideline context not found: {pair_guidelines_path}")
-        pair_guideline_context = json.loads(pair_guidelines_path.read_text(encoding="utf-8"))
     with open(f'utils/prompt_templates/layout_agent_xin.yaml', "r", encoding="utf-8") as f:
         prompt_cfg =  yaml.safe_load(f) 
     use_gpt5_responses = False
@@ -987,9 +848,6 @@ def generate_slide_plan(
         tables=tables,
         use_author_preferences=getattr(args, "use_author_preferences", False),
         author_preference_profile=author_preference_profile,
-        asset_selection_guidance=asset_selection_guidance,
-        use_pair_guidelines=getattr(args, "use_pair_guidelines", False),
-        pair_guidelines=pair_guideline_context,
     )
     raw_text, fresh_in_tok, fresh_out_tok, fresh_time_taken = call_layout_model(
         planner_prompt,
@@ -1007,6 +865,13 @@ def generate_slide_plan(
     in_tok += fresh_in_tok
     out_tok += fresh_out_tok
     time_taken += fresh_time_taken
+    draft_summary = summarize_slide_plan(slide_plan)
+    draft_repair_directives: Dict[str, Any] | None = None
+    repaired_summary: Dict[str, Any] | None = None
+    repaired_repair_directives: Dict[str, Any] | None = None
+    acceptance: Dict[str, Any] | None = None
+    repair_attempted = False
+    repair_report_path: str | None = None
 
     plan_debug_path = (
         f'contents/{args.paper_name}/'
@@ -1016,22 +881,21 @@ def generate_slide_plan(
         json.dump(slide_plan, f, indent=4)
 
     if getattr(args, "use_author_preferences", False) and author_preference_profile:
-        draft_summary = summarize_slide_plan(slide_plan)
-        repair_directives = build_repair_directives(author_preference_profile, draft_summary, asset_support)
-        if repair_directives["needs_repair"] and isinstance(draft_summary, dict):
+        draft_repair_directives = build_repair_directives(author_preference_profile, draft_summary, asset_support)
+        if draft_repair_directives["needs_repair"] and isinstance(draft_summary, dict):
+            repair_attempted = True
             repair_template = jinja_env.from_string(prompt_cfg["repair_template"])
             repair_prompt = repair_template.render(
                 raw_result_json=raw_json,
                 figures_json=figures_json,
                 formulas_json=formulas_json,
                 author_preference_profile_json=author_preference_profile,
-                numeric_target_summary_json=repair_directives["target_summary"],
+                numeric_target_summary_json=draft_repair_directives["target_summary"],
                 current_plan_summary_json=draft_summary,
-                repair_directives_json=repair_directives,
-                priority_metrics_json=repair_directives.get("priority_metrics", []),
-                edit_brief_json=repair_directives.get("edit_brief", []),
-                actionable_targets_json=repair_directives.get("actionable_targets", []),
-                asset_selection_guidance_json=asset_selection_guidance,
+                repair_directives_json=draft_repair_directives,
+                priority_metrics_json=draft_repair_directives.get("priority_metrics", []),
+                edit_brief_json=draft_repair_directives.get("edit_brief", []),
+                actionable_targets_json=draft_repair_directives.get("actionable_targets", []),
                 current_slide_plan_json=slide_plan,
                 anchor_plan_source=draft_plan_source,
             )
@@ -1049,12 +913,12 @@ def generate_slide_plan(
             repaired_plan = get_json_from_response(repair_raw_text)
             repaired_plan = sanitize_slide_plan_templates(repaired_plan)
             repaired_summary = summarize_slide_plan(repaired_plan)
-            repaired_directives = build_repair_directives(author_preference_profile, repaired_summary, asset_support)
+            repaired_repair_directives = build_repair_directives(author_preference_profile, repaired_summary, asset_support)
             acceptance = evaluate_repair_acceptance(
                 draft_summary,
                 repaired_summary,
-                repair_directives,
-                repaired_directives,
+                draft_repair_directives,
+                repaired_repair_directives,
             )
             repair_report_path = (
                 f'contents/{args.paper_name}/'
@@ -1063,9 +927,9 @@ def generate_slide_plan(
             repair_report = {
                 "anchor_plan_source": draft_plan_source,
                 "draft_summary": draft_summary,
-                "draft_repair_directives": repair_directives,
+                "draft_repair_directives": draft_repair_directives,
                 "repaired_summary": repaired_summary,
-                "repaired_repair_directives": repaired_directives,
+                "repaired_repair_directives": repaired_repair_directives,
                 "acceptance": acceptance,
                 "accepted_repair": acceptance["accepted"],
             }
@@ -1083,6 +947,53 @@ def generate_slide_plan(
     )
     with open(slide_plan_path, 'w', encoding="utf-8") as f:
         json.dump(slide_plan, f, indent=4)
+    final_summary = summarize_slide_plan(slide_plan)
+    trace_path = (
+        f'contents/{args.paper_name}/'
+        f'<{args.model_name_t}_{args.model_name_v}>_personalization_trace{plan_variant_suffix(args)}.json'
+    )
+    final_plan_source = draft_plan_source
+    if acceptance and acceptance.get("accepted"):
+        final_plan_source = "accepted_repair"
+    trace_payload = {
+        "paper_name": args.paper_name,
+        "model_name_t": args.model_name_t,
+        "model_name_v": args.model_name_v,
+        "plan_variant_suffix": plan_variant_suffix(args),
+        "use_author_preferences": bool(getattr(args, "use_author_preferences", False)),
+        "author_profile_path": getattr(args, "author_profile_path", None),
+        "author_profile_summary": build_profile_trace(author_preference_profile),
+        "asset_support": asset_support,
+        "paths": {
+            "paper_outline_json": paper_outline_json,
+            "figures_json": figures_path,
+            "formulas_json": formulas_path,
+            "images_json": f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/images_filtered.json',
+            "tables_json": f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/tables_filtered.json',
+            "draft_plan_json": plan_debug_path,
+            "repair_report_json": repair_report_path,
+            "final_plan_json": slide_plan_path,
+        },
+        "planner": {
+            "source": draft_plan_source,
+            "profile_injected": bool(author_preference_profile),
+            "draft_summary": draft_summary,
+            "draft_repair_directives": draft_repair_directives,
+        },
+        "repair": {
+            "attempted": repair_attempted,
+            "accepted": bool(acceptance and acceptance.get("accepted")),
+            "acceptance": acceptance,
+            "repaired_summary": repaired_summary,
+            "repaired_repair_directives": repaired_repair_directives,
+        },
+        "final": {
+            "selected_plan_source": final_plan_source,
+            "final_summary": final_summary,
+        },
+    }
+    with open(trace_path, 'w', encoding="utf-8") as f:
+        json.dump(trace_payload, f, indent=2)
     print("slide_plan")
     print(slide_plan)
     return in_tok, out_tok,time_taken 

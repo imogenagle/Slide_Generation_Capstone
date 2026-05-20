@@ -10,7 +10,6 @@ You will receive an `outline_mode`:
 • `technical`: create a listener-friendly technical presentation for a scientific conference. Keep the high-level presentation spine intact, including motivation, problem framing, approach overview, main contributions, key results, and takeaways when supported by the document. Then expand that spine with additional technical sections and subsections needed for a technically complete understanding of the work, including important methods, components, datasets, baselines, metrics, ablations, formulas, tables, limitations, and implementation-relevant details when present in the source.
 
 You may also receive an optional `author_preference_profile` distilled from that author's prior decks.
-You may also receive an optional `pair_guideline_context` distilled from prior paper-slide pairs for that same author.
 Treat both as active outline-style targets when multiple faithful outline structures are possible, but never as sources of factual content.
 
 HARD RULES  
@@ -85,20 +84,6 @@ HARD RULES
 15. Before returning the outline, do a deck-budget sanity check:
    • estimate whether this outline would likely create too many slides for the requested mode and profile.
    • if yes, merge neighboring subsections that support the same presentation point before returning the JSON.
-16. If `pair_guideline_context` is provided, treat it as evidence of how this author turns papers into decks:
-   • use it primarily for outline shape, narrative flow, section emphasis, and what gets merged versus split,
-   • use recurring patterns across the reference pairs as stronger signals than one-off quirks,
-   • do not copy factual claims or topic-specific details from the reference pairs into the target outline.
-17. When `pair_guideline_context` is present, especially pay attention to:
-   • recurring `presentation_guidelines.narrative_flow_preferences`,
-   • `section_emphasis_patterns`,
-   • `content_style_preferences`,
-   • `compression_patterns`,
-   • `planning_hints.structure_preferences`.
-18. If both `author_preference_profile` and `pair_guideline_context` are present:
-   • prefer `pair_guideline_context` for the structure and story shape of the outline,
-   • prefer `author_preference_profile` for coarse deck-budget calibration such as density and approximate slide granularity,
-   • when they conflict, stay content-faithful first, then follow the pair-guideline signal for structure.
  
 OPTIONAL RULES  
 • If the document explicitly labels parts as “Step 1 / Step 2 / …” (or stages, phases, modules), you may map **each step to a separate subsection**.  
@@ -114,13 +99,6 @@ outline_mode:
 author_preference_profile:
 {% if use_author_preferences %}
 {{ author_preference_profile_json }}
-{% else %}
-null
-{% endif %}
-
-pair_guideline_context:
-{% if use_pair_guidelines %}
-{{ pair_guidelines_json }}
 {% else %}
 null
 {% endif %}
