@@ -66,6 +66,25 @@ def plan_prefix(model_name_t: str, model_name_v: str) -> str:
     return f"<{model_name_t}_{model_name_v}>"
 
 
+def personalized_variant_suffix(personalization_mode: str) -> str:
+    if personalization_mode == "retrieval":
+        return "personalized_retrieval"
+    return "personalized"
+
+
+def personalized_folder_suffix(personalization_mode: str) -> str:
+    if personalization_mode == "retrieval":
+        return "_personalized_retrieval"
+    return "_personalized"
+
+
+def resolve_output_root(output_dir: str | None) -> Path:
+    if not output_dir:
+        return REPO_ROOT
+    path = Path(output_dir)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
 def build_pipeline_command(
     *,
     python_bin: Path,
@@ -75,6 +94,8 @@ def build_pipeline_command(
     outline_mode: str,
     formula_mode: int,
     personalized: bool,
+    personalization_mode: str,
+    output_dir: str | None,
 ) -> list[object]:
     command: list[object] = [
         python_bin,
@@ -93,6 +114,9 @@ def build_pipeline_command(
         "--formula_mode",
         formula_mode,
     ]
+    if output_dir:
+        command.extend(["--output_dir", output_dir])
+    command.extend(["--personalization_mode", personalization_mode])
     if personalized:
         command.extend(
             [
@@ -111,21 +135,25 @@ def build_eval_commands(
     model_name_t: str,
     model_name_v: str,
     outline_mode: str,
+    personalization_mode: str,
     judge_model: str,
     core_coverage_model: str,
     skip_bundle_eval: bool,
+    output_dir: str | None,
 ) -> tuple[list[object], list[list[object]], dict[str, Path]]:
+    run_root = resolve_output_root(output_dir)
     folder_base = content_folder_name(spec, outline_mode)
-    baseline_folder = REPO_ROOT / "contents" / folder_base
-    personalized_folder = REPO_ROOT / "contents" / f"{folder_base}_personalized"
+    baseline_folder = run_root / "contents" / folder_base
+    personalized_folder = run_root / "contents" / f"{folder_base}{personalized_folder_suffix(personalization_mode)}"
     prefix = plan_prefix(model_name_t, model_name_v)
+    personalized_suffix = personalized_variant_suffix(personalization_mode)
 
     baseline_plan = baseline_folder / f"{prefix}_slide_plan_baseline.json"
-    personalized_plan = personalized_folder / f"{prefix}_slide_plan_personalized.json"
+    personalized_plan = personalized_folder / f"{prefix}_slide_plan_{personalized_suffix}.json"
     baseline_pptx = baseline_folder / f"{model_name_t}_{model_name_v}_output_slides_baseline.pptx"
-    personalized_pptx = personalized_folder / f"{model_name_t}_{model_name_v}_output_slides_personalized.pptx"
+    personalized_pptx = personalized_folder / f"{model_name_t}_{model_name_v}_output_slides_{personalized_suffix}.pptx"
 
-    eval_dir = REPO_ROOT / "Capstone" / "evaluations" / "user_personalization" / spec.user_id
+    eval_dir = run_root / "Capstone" / "evaluations" / "user_personalization" / spec.user_id
     eval_dir.mkdir(parents=True, exist_ok=True)
     pairwise_output = eval_dir / "personalization_alignment_pairwise.json"
 
@@ -191,6 +219,7 @@ def build_eval_commands(
         "pairwise_output": pairwise_output,
         "baseline_pptx": baseline_pptx,
         "personalized_pptx": personalized_pptx,
+        "eval_dir": eval_dir,
     }
     return pairwise_command, bundle_commands, outputs
 
@@ -219,9 +248,11 @@ def run_for_user(
     model_name_v: str,
     outline_mode: str,
     formula_mode: int,
+    personalization_mode: str,
     judge_model: str,
     core_coverage_model: str,
     skip_bundle_eval: bool,
+    output_dir: str | None,
     dry_run: bool,
 ) -> None:
     log(f"Starting {spec.user_id}")
@@ -238,6 +269,8 @@ def run_for_user(
         outline_mode=outline_mode,
         formula_mode=formula_mode,
         personalized=False,
+        personalization_mode=personalization_mode,
+        output_dir=output_dir,
     )
     personalized_command = build_pipeline_command(
         python_bin=python_bin,
@@ -247,6 +280,8 @@ def run_for_user(
         outline_mode=outline_mode,
         formula_mode=formula_mode,
         personalized=True,
+        personalization_mode=personalization_mode,
+        output_dir=output_dir,
     )
 
     run_command(baseline_command, dry_run=dry_run)
@@ -258,9 +293,11 @@ def run_for_user(
         model_name_t=model_name_t,
         model_name_v=model_name_v,
         outline_mode=outline_mode,
+        personalization_mode=personalization_mode,
         judge_model=judge_model,
         core_coverage_model=core_coverage_model,
         skip_bundle_eval=skip_bundle_eval,
+        output_dir=output_dir,
     )
 
     run_command(pairwise_command, dry_run=dry_run)
@@ -272,7 +309,7 @@ def run_for_user(
 
     log(f"{spec.user_id}: baseline plan -> {outputs['baseline_plan']}")
     log(f"{spec.user_id}: personalized plan -> {outputs['personalized_plan']}")
-    print_eval_summary(spec, outputs["alignment_output"].parent)
+    print_eval_summary(spec, outputs["pairwise_output"].parent)
 
 
 def parse_args() -> argparse.Namespace:
@@ -282,9 +319,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-name-v", default="gpt-5.4-nano")
     parser.add_argument("--outline-mode", choices=["high_level", "technical"], default="high_level")
     parser.add_argument("--formula-mode", type=int, choices=[1, 2, 3], default=1)
-    parser.add_argument("--judge-model", default="gpt-5")
-    parser.add_argument("--core-coverage-model", default="4o-mini")
+    parser.add_argument("--personalization-mode", choices=["standard", "retrieval"], default="standard")
+    parser.add_argument("--judge-model", default="gpt-5.4-nano")
+    parser.add_argument("--core-coverage-model", default="gpt-5.4-nano")
     parser.add_argument("--skip-bundle-eval", action="store_true")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Base directory for generated contents/, image tables, and evaluation outputs.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -301,9 +344,11 @@ def main() -> None:
             model_name_v=args.model_name_v,
             outline_mode=args.outline_mode,
             formula_mode=args.formula_mode,
+            personalization_mode=args.personalization_mode,
             judge_model=args.judge_model,
             core_coverage_model=args.core_coverage_model,
             skip_bundle_eval=args.skip_bundle_eval,
+            output_dir=args.output_dir,
             dry_run=args.dry_run,
         )
     log("Done")

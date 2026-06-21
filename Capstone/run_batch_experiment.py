@@ -44,66 +44,110 @@ def build_contents_dir_name(paper_id: str, paper_path: Path, outline_mode: str, 
     return f"{base}_personalized" if personalized else base
 
 
+def resolve_output_root(output_dir: str | None) -> Path:
+    if not output_dir:
+        return PROJECT_ROOT
+    path = Path(output_dir)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def personalized_variant_suffix(personalization_mode: str) -> str:
+    if personalization_mode == "retrieval":
+        return "personalized_retrieval"
+    return "personalized"
+
+
+def personalized_folder_suffix(personalization_mode: str) -> str:
+    if personalization_mode == "retrieval":
+        return "_personalized_retrieval"
+    return "_personalized"
+
+
 def build_pptx_path(
+    output_root: Path,
     paper_id: str,
     paper_path: Path,
     outline_mode: str,
     personalized: bool,
+    personalization_mode: str,
     model_name_t: str,
     model_name_v: str,
 ) -> Path:
-    contents_name = build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
-    variant_suffix = "personalized" if personalized else "baseline"
-    return PROJECT_ROOT / "contents" / contents_name / f"{model_name_t}_{model_name_v}_output_slides_{variant_suffix}.pptx"
+    contents_name = (
+        f"{append_outline_mode_suffix(output_dir_key(paper_id, paper_path), outline_mode)}{personalized_folder_suffix(personalization_mode)}"
+        if personalized else build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
+    )
+    variant_suffix = personalized_variant_suffix(personalization_mode) if personalized else "baseline"
+    return output_root / "contents" / contents_name / f"{model_name_t}_{model_name_v}_output_slides_{variant_suffix}.pptx"
 
 
 def build_plan_path(
+    output_root: Path,
     paper_id: str,
     paper_path: Path,
     outline_mode: str,
     personalized: bool,
+    personalization_mode: str,
     model_name_t: str,
     model_name_v: str,
 ) -> Path:
-    contents_name = build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
-    variant_suffix = "personalized" if personalized else "baseline"
-    return PROJECT_ROOT / "contents" / contents_name / f"<{model_name_t}_{model_name_v}>_slide_plan_{variant_suffix}.json"
+    contents_name = (
+        f"{append_outline_mode_suffix(output_dir_key(paper_id, paper_path), outline_mode)}{personalized_folder_suffix(personalization_mode)}"
+        if personalized else build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
+    )
+    variant_suffix = personalized_variant_suffix(personalization_mode) if personalized else "baseline"
+    return output_root / "contents" / contents_name / f"<{model_name_t}_{model_name_v}>_slide_plan_{variant_suffix}.json"
 
 
 def build_raw_content_path(
+    output_root: Path,
     paper_id: str,
     paper_path: Path,
     outline_mode: str,
     personalized: bool,
+    personalization_mode: str,
     model_name_t: str,
     model_name_v: str,
 ) -> Path:
-    contents_name = build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
-    return PROJECT_ROOT / "contents" / contents_name / f"<{model_name_t}_{model_name_v}>_raw_content.json"
+    contents_name = (
+        f"{append_outline_mode_suffix(output_dir_key(paper_id, paper_path), outline_mode)}{personalized_folder_suffix(personalization_mode)}"
+        if personalized else build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
+    )
+    return output_root / "contents" / contents_name / f"<{model_name_t}_{model_name_v}>_raw_content.json"
 
 
 def build_figures_path(
+    output_root: Path,
     paper_id: str,
     paper_path: Path,
     outline_mode: str,
     personalized: bool,
+    personalization_mode: str,
     model_name_t: str,
     model_name_v: str,
 ) -> Path:
-    contents_name = build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
-    return PROJECT_ROOT / "contents" / contents_name / f"<{model_name_t}_{model_name_v}>_figures.json"
+    contents_name = (
+        f"{append_outline_mode_suffix(output_dir_key(paper_id, paper_path), outline_mode)}{personalized_folder_suffix(personalization_mode)}"
+        if personalized else build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
+    )
+    return output_root / "contents" / contents_name / f"<{model_name_t}_{model_name_v}>_figures.json"
 
 
 def build_formula_match_path(
+    output_root: Path,
     paper_id: str,
     paper_path: Path,
     outline_mode: str,
     personalized: bool,
+    personalization_mode: str,
     model_name_t: str,
     model_name_v: str,
 ) -> Path:
-    contents_name = build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
-    return PROJECT_ROOT / "contents" / contents_name / f"<{model_name_t}_{model_name_v}>_formula_match.json"
+    contents_name = (
+        f"{append_outline_mode_suffix(output_dir_key(paper_id, paper_path), outline_mode)}{personalized_folder_suffix(personalization_mode)}"
+        if personalized else build_contents_dir_name(paper_id, paper_path, outline_mode, personalized)
+    )
+    return output_root / "contents" / contents_name / f"<{model_name_t}_{model_name_v}>_formula_match.json"
 
 
 def is_nonempty_json_file(path: Path) -> bool:
@@ -118,40 +162,42 @@ def is_nonempty_json_file(path: Path) -> bool:
 
 def generation_outputs_ready(
     *,
+    output_root: Path,
     paper_id: str,
     paper_path: Path,
     outline_mode: str,
     personalized: bool,
+    personalization_mode: str,
     model_name_t: str,
     model_name_v: str,
 ) -> bool:
     pptx_path = build_pptx_path(
-        paper_id, paper_path, outline_mode, personalized, model_name_t, model_name_v
+        output_root, paper_id, paper_path, outline_mode, personalized, personalization_mode, model_name_t, model_name_v
     )
     if not pptx_path.exists() or pptx_path.stat().st_size == 0:
         return False
 
     required_jsons = [
         build_raw_content_path(
-            paper_id, paper_path, outline_mode, personalized, model_name_t, model_name_v
+            output_root, paper_id, paper_path, outline_mode, personalized, personalization_mode, model_name_t, model_name_v
         ),
         build_plan_path(
-            paper_id, paper_path, outline_mode, personalized, model_name_t, model_name_v
+            output_root, paper_id, paper_path, outline_mode, personalized, personalization_mode, model_name_t, model_name_v
         ),
         build_figures_path(
-            paper_id, paper_path, outline_mode, personalized, model_name_t, model_name_v
+            output_root, paper_id, paper_path, outline_mode, personalized, personalization_mode, model_name_t, model_name_v
         ),
         build_formula_match_path(
-            paper_id, paper_path, outline_mode, personalized, model_name_t, model_name_v
+            output_root, paper_id, paper_path, outline_mode, personalized, personalization_mode, model_name_t, model_name_v
         ),
     ]
     return all(is_nonempty_json_file(path) for path in required_jsons)
 
 
-def resolve_manifest_path(experiment_name: str, manifest_path: Path | None) -> Path:
+def resolve_manifest_path(experiment_name: str, manifest_path: Path | None, batch_run_root: Path) -> Path:
     if manifest_path is not None:
         return manifest_path
-    return DEFAULT_MANIFEST_DIR / f"{experiment_name}.manifest.json"
+    return batch_run_root / f"{experiment_name}.manifest.json"
 
 
 def load_candidates(raw_root: Path, papers_csv: Path) -> list[dict[str, str]]:
@@ -213,6 +259,7 @@ def sample_papers(
     require_personalization: bool,
     outline_mode: str,
     include_existing: bool,
+    personalization_mode: str,
     model_name_t: str,
     model_name_v: str,
     min_primary_author_paper_count: int,
@@ -221,6 +268,7 @@ def sample_papers(
     author_ids_by_paper: dict[str, list[str]],
     paper_ids_by_author: dict[str, set[str]],
     author_count_mode: str,
+    output_root: Path,
 ) -> list[dict[str, str]]:
     import random
 
@@ -251,18 +299,22 @@ def sample_papers(
         if not include_existing:
             paper_path = Path(item["paper_path"])
             baseline_ready = generation_outputs_ready(
+                output_root=output_root,
                 paper_id=paper_id,
                 paper_path=paper_path,
                 outline_mode=outline_mode,
                 personalized=False,
+                personalization_mode=personalization_mode,
                 model_name_t=model_name_t,
                 model_name_v=model_name_v,
             )
             personalized_ready = generation_outputs_ready(
+                output_root=output_root,
                 paper_id=paper_id,
                 paper_path=paper_path,
                 outline_mode=outline_mode,
                 personalized=True,
+                personalization_mode=personalization_mode,
                 model_name_t=model_name_t,
                 model_name_v=model_name_v,
             )
@@ -326,7 +378,9 @@ def generation_command(
     *,
     paper_path: Path,
     author_id: str | None,
+    author_profile_path: Path | None,
     personalized: bool,
+    personalization_mode: str,
     model_name_t: str,
     model_name_v: str,
     formula_mode: int,
@@ -334,6 +388,7 @@ def generation_command(
     preference_model: str,
     preference_max_papers: int,
     force_refresh_preferences: bool,
+    output_dir: str | None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -349,7 +404,11 @@ def generation_command(
         str(formula_mode),
         "--outline_mode",
         outline_mode,
+        "--personalization_mode",
+        personalization_mode,
     ]
+    if output_dir:
+        command.extend(["--output_dir", output_dir])
     if personalized:
         if not author_id:
             raise ValueError("author_id is required for personalized generation")
@@ -358,15 +417,49 @@ def generation_command(
                 "--use_author_preferences",
                 "--author_id",
                 author_id,
-                "--preference_model",
-                preference_model,
-                "--preference_max_papers",
-                str(preference_max_papers),
             ]
         )
+        if author_profile_path is not None:
+            command.extend(["--author_profile_path", str(author_profile_path)])
+        else:
+            command.extend(
+                [
+                    "--preference_model",
+                    preference_model,
+                    "--preference_max_papers",
+                    str(preference_max_papers),
+                ]
+            )
         if force_refresh_preferences:
             command.append("--force_refresh_preferences")
     return command
+
+
+def resolve_profile_path(
+    *,
+    personalization_mode: str,
+    author_id: str | None,
+    paper_id: str,
+    retrieval_profile_dir: Path | None,
+) -> Path | None:
+    if not author_id:
+        return None
+    if personalization_mode == "retrieval":
+        if retrieval_profile_dir is None:
+            raise ValueError(
+                "--retrieval-profile-dir is required when --personalization-mode retrieval is used."
+            )
+        expected_name = f"{author_id}.{paper_id.replace(':', '_')}.retrieval.json"
+        candidate = retrieval_profile_dir / expected_name
+        if candidate.exists():
+            return candidate
+        matches = sorted(retrieval_profile_dir.glob(f"{author_id}.{paper_id.replace(':', '_')}*.retrieval.json"))
+        if matches:
+            return matches[0]
+        raise FileNotFoundError(
+            f"Retrieval profile not found for author_id={author_id}, paper_id={paper_id} under {retrieval_profile_dir}"
+        )
+    return PROJECT_ROOT / "Capstone" / "profiles" / f"{author_id}.json"
 
 
 def bundle_eval_command(
@@ -410,7 +503,7 @@ def personalization_eval_command(
 ) -> list[str]:
     return [
         sys.executable,
-        "Capstone/evaluate_personalization_alignment.py",
+        "Capstone/evaluate_personalization_alignment_pairwise.py",
         "--profile",
         str(profile_path),
         "--baseline-plan",
@@ -419,6 +512,27 @@ def personalization_eval_command(
         str(personalized_plan),
         "--model",
         judge_model,
+        "--output",
+        str(output_path),
+    ]
+
+
+def retrieval_numeric_eval_command(
+    *,
+    profile_path: Path,
+    baseline_plan: Path,
+    personalized_plan: Path,
+    output_path: Path,
+) -> list[str]:
+    return [
+        sys.executable,
+        "Capstone/evaluate_retrieval_alignment_numeric.py",
+        "--profile",
+        str(profile_path),
+        "--baseline-plan",
+        str(baseline_plan),
+        "--personalized-plan",
+        str(personalized_plan),
         "--output",
         str(output_path),
     ]
@@ -450,11 +564,23 @@ def main() -> None:
     parser.add_argument("--papers-csv", type=Path, default=DEFAULT_PAPERS_CSV)
     parser.add_argument("--paper-authors-csv", type=Path, default=DEFAULT_PAPER_AUTHORS_CSV)
     parser.add_argument("--split", action="append", default=None, help="Restrict to one or more dataset splits.")
-    parser.add_argument("--model-name-t", default="4o-mini")
-    parser.add_argument("--model-name-v", default="4o-mini")
+    parser.add_argument("--model-name-t", default="gpt-5.4-nano")
+    parser.add_argument("--model-name-v", default="gpt-5.4-nano")
     parser.add_argument("--formula-mode", type=int, choices=[1, 2, 3], default=1)
     parser.add_argument("--outline-mode", choices=["high_level", "technical"], default="high_level")
-    parser.add_argument("--preference-model", default="4o-mini")
+    parser.add_argument("--personalization-mode", choices=["standard", "retrieval"], default="standard")
+    parser.add_argument(
+        "--retrieval-profile-dir",
+        type=Path,
+        default=None,
+        help="Directory containing retrieval profiles named like <author_id>.<paper_id_with_underscore>.retrieval.json.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Base output directory for generated contents and Capstone batch artifacts.",
+    )
+    parser.add_argument("--preference-model", default="gpt-5.4-nano")
     parser.add_argument("--preference-max-papers", type=int, default=5)
     parser.add_argument(
         "--min-primary-author-paper-count",
@@ -474,13 +600,18 @@ def main() -> None:
         help="Whether author-history thresholds and distinct-author sampling should use only the primary author or any listed author.",
     )
     parser.add_argument("--force-refresh-preferences", action="store_true")
-    parser.add_argument("--core-coverage-model", default="4o-mini")
-    parser.add_argument("--judge-model", default="gpt-5")
+    parser.add_argument("--core-coverage-model", default="gpt-5.4-nano")
+    parser.add_argument("--judge-model", default="gpt-5.4-nano")
     parser.add_argument("--render-dpi", type=int, default=120)
     parser.add_argument("--skip-baseline-generation", action="store_true")
     parser.add_argument("--skip-personalized-generation", action="store_true")
     parser.add_argument("--skip-bundle-eval", action="store_true")
     parser.add_argument("--skip-personalization-eval", action="store_true")
+    parser.add_argument(
+        "--run-retrieval-numeric-eval",
+        action="store_true",
+        help="Run the retrieval-only numeric evaluator after generation. Intended for personalization-mode retrieval.",
+    )
     parser.add_argument(
         "--include-preference-dependent-slidetailor",
         action="store_true",
@@ -495,6 +626,10 @@ def main() -> None:
     args.paper_authors_csv = resolve_cli_path(args.paper_authors_csv)
     args.manifest_path = resolve_cli_path(args.manifest_path)
     args.use_manifest = resolve_cli_path(args.use_manifest)
+    args.retrieval_profile_dir = resolve_cli_path(args.retrieval_profile_dir)
+    output_root = resolve_output_root(args.output_dir)
+    batch_run_root = output_root / "Capstone" / "batch_runs"
+    experiment_root = batch_run_root / "experiments"
 
     if args.count <= 0:
         raise SystemExit("--count must be positive")
@@ -506,13 +641,13 @@ def main() -> None:
         f"cohort_{args.count}_seed{args.seed}_{args.outline_mode}_{args.model_name_t}_{args.model_name_v}_{timestamp}"
     )
     experiment_name = sanitize_name(args.experiment_name or default_name)
-    experiment_dir = resolve_experiment_dir(experiment_name)
+    experiment_dir = experiment_root / experiment_name
     experiment_dir.mkdir(parents=True, exist_ok=True)
 
     primary_author_ids = load_primary_author_ids(args.paper_authors_csv)
     primary_author_paper_counts = load_primary_author_paper_counts(args.paper_authors_csv)
     paper_ids_by_author, author_ids_by_paper = load_author_paper_index(args.paper_authors_csv)
-    manifest_path = resolve_manifest_path(experiment_name, args.manifest_path)
+    manifest_path = resolve_manifest_path(experiment_name, args.manifest_path, batch_run_root)
 
     if args.use_manifest:
         manifest = load_manifest(args.use_manifest)
@@ -530,6 +665,7 @@ def main() -> None:
             require_personalization=(not args.skip_personalized_generation) or (not args.skip_personalization_eval),
             outline_mode=args.outline_mode,
             include_existing=args.include_existing,
+            personalization_mode=args.personalization_mode,
             model_name_t=args.model_name_t,
             model_name_v=args.model_name_v,
             min_primary_author_paper_count=args.min_primary_author_paper_count,
@@ -538,6 +674,7 @@ def main() -> None:
             author_ids_by_paper=author_ids_by_paper,
             paper_ids_by_author=paper_ids_by_author,
             author_count_mode=args.author_count_mode,
+            output_root=output_root,
         )
         manifest = {
             "experiment_name": experiment_name,
@@ -575,18 +712,23 @@ def main() -> None:
         print(f"[{index}/{len(selected)}] {paper_id}")
 
         baseline_pptx = build_pptx_path(
-            paper_id, paper_path, args.outline_mode, False, args.model_name_t, args.model_name_v
+            output_root, paper_id, paper_path, args.outline_mode, False, args.personalization_mode, args.model_name_t, args.model_name_v
         )
         personalized_pptx = build_pptx_path(
-            paper_id, paper_path, args.outline_mode, True, args.model_name_t, args.model_name_v
+            output_root, paper_id, paper_path, args.outline_mode, True, args.personalization_mode, args.model_name_t, args.model_name_v
         )
         baseline_plan = build_plan_path(
-            paper_id, paper_path, args.outline_mode, False, args.model_name_t, args.model_name_v
+            output_root, paper_id, paper_path, args.outline_mode, False, args.personalization_mode, args.model_name_t, args.model_name_v
         )
         personalized_plan = build_plan_path(
-            paper_id, paper_path, args.outline_mode, True, args.model_name_t, args.model_name_v
+            output_root, paper_id, paper_path, args.outline_mode, True, args.personalization_mode, args.model_name_t, args.model_name_v
         )
-        profile_path = PROJECT_ROOT / "Capstone" / "profiles" / f"{author_id}.json" if author_id else None
+        profile_path = resolve_profile_path(
+            personalization_mode=args.personalization_mode,
+            author_id=author_id,
+            paper_id=paper_id,
+            retrieval_profile_dir=args.retrieval_profile_dir,
+        ) if author_id else None
 
         paper_summary: dict[str, Any] = {
             "paper_id": paper_id,
@@ -600,10 +742,12 @@ def main() -> None:
         try:
             if not args.skip_baseline_generation:
                 if generation_outputs_ready(
+                    output_root=output_root,
                     paper_id=paper_id,
                     paper_path=paper_path,
                     outline_mode=args.outline_mode,
                     personalized=False,
+                    personalization_mode=args.personalization_mode,
                     model_name_t=args.model_name_t,
                     model_name_v=args.model_name_v,
                 ) and not args.dry_run:
@@ -613,7 +757,9 @@ def main() -> None:
                         generation_command(
                             paper_path=paper_path,
                             author_id=None,
+                            author_profile_path=None,
                             personalized=False,
+                            personalization_mode=args.personalization_mode,
                             model_name_t=args.model_name_t,
                             model_name_v=args.model_name_v,
                             formula_mode=args.formula_mode,
@@ -621,6 +767,7 @@ def main() -> None:
                             preference_model=args.preference_model,
                             preference_max_papers=args.preference_max_papers,
                             force_refresh_preferences=args.force_refresh_preferences,
+                            output_dir=args.output_dir,
                         ),
                         cwd=PROJECT_ROOT,
                         dry_run=args.dry_run,
@@ -631,10 +778,12 @@ def main() -> None:
                 if not author_id:
                     raise RuntimeError(f"Missing primary author_id for personalized run: {paper_id}")
                 if generation_outputs_ready(
+                    output_root=output_root,
                     paper_id=paper_id,
                     paper_path=paper_path,
                     outline_mode=args.outline_mode,
                     personalized=True,
+                    personalization_mode=args.personalization_mode,
                     model_name_t=args.model_name_t,
                     model_name_v=args.model_name_v,
                 ) and not args.dry_run:
@@ -644,7 +793,9 @@ def main() -> None:
                         generation_command(
                             paper_path=paper_path,
                             author_id=author_id,
+                            author_profile_path=profile_path,
                             personalized=True,
+                            personalization_mode=args.personalization_mode,
                             model_name_t=args.model_name_t,
                             model_name_v=args.model_name_v,
                             formula_mode=args.formula_mode,
@@ -652,6 +803,7 @@ def main() -> None:
                             preference_model=args.preference_model,
                             preference_max_papers=args.preference_max_papers,
                             force_refresh_preferences=args.force_refresh_preferences,
+                            output_dir=args.output_dir,
                         ),
                         cwd=PROJECT_ROOT,
                         dry_run=args.dry_run,
@@ -711,6 +863,24 @@ def main() -> None:
                     dry_run=args.dry_run,
                 )
                 paper_summary["statuses"]["personalization_eval"] = "requested"
+
+            if args.run_retrieval_numeric_eval:
+                if args.personalization_mode != "retrieval":
+                    raise RuntimeError("--run-retrieval-numeric-eval requires --personalization-mode retrieval")
+                if not author_id or profile_path is None:
+                    raise RuntimeError(f"Missing retrieval profile context for retrieval numeric eval: {paper_id}")
+                output_path = experiment_dir / "retrieval_numeric_eval" / f"{paper_id.replace(':', '_')}.json"
+                run_command(
+                    retrieval_numeric_eval_command(
+                        profile_path=profile_path,
+                        baseline_plan=baseline_plan,
+                        personalized_plan=personalized_plan,
+                        output_path=output_path,
+                    ),
+                    cwd=PROJECT_ROOT,
+                    dry_run=args.dry_run,
+                )
+                paper_summary["statuses"]["retrieval_numeric_eval"] = "requested"
 
             paper_summary["status"] = "ok"
         except subprocess.CalledProcessError as exc:

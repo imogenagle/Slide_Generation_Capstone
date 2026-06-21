@@ -9,6 +9,17 @@ import csv
 import json
 import os
 import time
+from SlidesAgent.output_paths import (
+    detail_log_path,
+    figures_json_path,
+    formula_match_path,
+    images_filtered_path,
+    log_json_path,
+    output_pptx_path,
+    paper_output_dir,
+    raw_content_path,
+    tables_filtered_path,
+)
  
 # Create a theme profile here
 theme_title_text_color = (255,255,0)
@@ -147,7 +158,7 @@ def load_panels(paper_name, save_dir="outputs"):
 from pptx.util import Inches, Pt
 from pptx.enum.text import PP_ALIGN
 from pptx import Presentation
-def _import_pipeline_modules():
+def _import_pipeline_modules(personalization_mode: str = "standard"):
     from pptx.util import Inches
     from SlidesAgent.parse_raw import (
         parse_raw,
@@ -157,7 +168,10 @@ def _import_pipeline_modules():
     )
     from SlidesAgent.gen_figure_match import gen_figure_match, filter_image_table
     from SlidesAgent.gen_formula import build_formula_json, gen_formula_match_v1
-    from SlidesAgent.layout_agent_xin import generate_slide_plan
+    if personalization_mode == "retrieval":
+        from SlidesAgent.layout_agent_xin_retrieval import generate_slide_plan
+    else:
+        from SlidesAgent.layout_agent_xin import generate_slide_plan
     from SlidesAgent.layout_filler import generate_pptx_from_plan
     from Capstone.preference_distill import distill_author_profile
     from utils.wei_utils import get_agent_config
@@ -186,6 +200,15 @@ def build_arg_parser(*, description: str = 'Poster Generation Pipeline') -> argp
     parser.add_argument('--model_name_v', type=str, default='4o')
     parser.add_argument('--index', type=int, default=0)
     parser.add_argument('--paper_name', type=str, default=None)
+    parser.add_argument(
+        '--output_dir',
+        type=str,
+        default='.',
+        help=(
+            'Base directory for run artifacts. The pipeline will create '
+            '"contents/<paper_name>" and "<model>_images_and_tables/<paper_name>" under this path.'
+        ),
+    )
     parser.add_argument('--tmp_dir', type=str, default='tmp')
     parser.add_argument('--no_blank_detection', action='store_true', help='When overflow is severe, try this option.')
     parser.add_argument('--ablation_no_tree_layout', action='store_true', help='Ablation study: no tree layout')
@@ -238,6 +261,12 @@ def build_arg_parser(*, description: str = 'Poster Generation Pipeline') -> argp
         action='store_true',
         help='Regenerate the author profile even if a cached profile JSON already exists.',
     )
+    parser.add_argument(
+        '--personalization_mode',
+        choices=['standard', 'retrieval'],
+        default='standard',
+        help='Choose the standard personalization path or the retrieval-conditioned personalization path.',
+    )
     return parser
 
 
@@ -249,12 +278,21 @@ def configure_variant_args(args: argparse.Namespace) -> bool:
 
     if not getattr(args, "output_variant_suffix", None):
         if requested_personalized:
-            args.output_variant_suffix = "_personalized"
+            args.output_variant_suffix = (
+                "_personalized_retrieval" if getattr(args, "personalization_mode", "standard") == "retrieval"
+                else "_personalized"
+            )
         else:
             args.output_variant_suffix = "_baseline"
 
     if not hasattr(args, "output_folder_suffix") or args.output_folder_suffix is None:
-        args.output_folder_suffix = "_personalized" if requested_personalized else ""
+        if requested_personalized:
+            args.output_folder_suffix = (
+                "_personalized_retrieval" if getattr(args, "personalization_mode", "standard") == "retrieval"
+                else "_personalized"
+            )
+        else:
+            args.output_folder_suffix = ""
 
     return requested_personalized
 
@@ -262,6 +300,11 @@ def configure_variant_args(args: argparse.Namespace) -> bool:
 def prepare_author_profile(args: argparse.Namespace, distill_author_profile, detail_log: dict) -> None:
     if not getattr(args, "use_author_preferences", False):
         return
+    if getattr(args, "personalization_mode", "standard") == "retrieval" and not args.author_profile_path:
+        raise ValueError(
+            "--author_profile_path is required when --personalization_mode retrieval is enabled. "
+            "This mode expects a prebuilt retrieval profile JSON."
+        )
     if args.author_profile_path:
         profile_path = Path(args.author_profile_path)
     else:
@@ -328,7 +371,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     os.makedirs(args.tmp_dir, exist_ok=True)
 
     detail_log = {}
-    pipeline = _import_pipeline_modules()
+    pipeline = _import_pipeline_modules(getattr(args, "personalization_mode", "standard"))
     Inches = pipeline["Inches"]
     parse_raw = pipeline["parse_raw"]
     gen_image_and_table = pipeline["gen_image_and_table"]
@@ -344,6 +387,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     get_agent_config = pipeline["get_agent_config"]
 
     detail_log['outline_mode'] = args.outline_mode
+    detail_log['personalization_mode'] = getattr(args, "personalization_mode", "standard")
     slide_width_inches = 13.33
     slide_height_inches = 7.5
     slide_width = Inches(slide_width_inches)
@@ -370,33 +414,24 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     args.paper_name = append_output_folder_suffix(args.paper_name, getattr(args, "output_folder_suffix", ""))
     detail_log['output_paper_name'] = args.paper_name
+    detail_log['output_dir'] = str(getattr(args, "output_dir", "."))
     detail_log['requested_personalized_run'] = requested_personalized
     detail_log['effective_use_author_preferences'] = getattr(args, "use_author_preferences", False)
 
-    figs_json_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_figures.json"
-    formula_json_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_formula_match.json"
-    paper_outline_json = f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_raw_content.json'
-
-    output_pptx = (
-        f'contents/{args.paper_name}/'
-        f'{args.model_name_t}_{args.model_name_v}_output_slides{args.output_variant_suffix}.pptx'
-    )
-    images_filtered_path = (
-        f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/'
-        f'{args.paper_name}/images_filtered.json'
-    )
-    tables_filtered_path = (
-        f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/'
-        f'{args.paper_name}/tables_filtered.json'
-    )
+    figs_json_path = figures_json_path(args)
+    formula_json_path = formula_match_path(args)
+    paper_outline_json = raw_content_path(args)
+    output_pptx = output_pptx_path(args, args.output_variant_suffix)
+    images_filtered_json = images_filtered_path(args)
+    tables_filtered_json = tables_filtered_path(args)
     reuse_cached_parse_artifacts = all(
         os.path.exists(path)
         for path in (
             paper_outline_json,
             figs_json_path,
             formula_json_path,
-            images_filtered_path,
-            tables_filtered_path,
+            images_filtered_json,
+            tables_filtered_json,
         )
     )
 
@@ -453,9 +488,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
     time_taken = end_time - start_time
     print("time_taken:", time_taken)
 
-    output_dir = f'contents/{args.paper_name}'
+    output_dir = paper_output_dir(args)
     variant_suffix = args.output_variant_suffix
-    log_file = os.path.join(output_dir, f'<{args.model_name_t}_{args.model_name_v}>_log{variant_suffix}.json')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_json_path(args, variant_suffix)
     with open(log_file, 'w') as f:
         log_data = {
             'input_tokens_t': total_input_tokens_t,
@@ -469,7 +505,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     print("✅ all files exist……")
     generate_pptx_from_plan(args, 3)
 
-    detail_log_file = os.path.join(output_dir, f'detail_log{variant_suffix}.json')
+    detail_log_file = detail_log_path(args, variant_suffix)
     with open(detail_log_file, 'w') as f:
         json.dump(detail_log, f, indent=4)
 
