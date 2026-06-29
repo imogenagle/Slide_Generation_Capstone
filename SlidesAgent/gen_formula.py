@@ -19,6 +19,13 @@ from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 
 import pickle as pkl
 import argparse
+from SlidesAgent.output_paths import (
+    formula_images_dir,
+    formula_index_path,
+    formula_match_path,
+    formula_sections_path,
+    raw_content_path,
+)
 
 load_dotenv()
  
@@ -52,8 +59,8 @@ def gen_formula_match_v1(args, actor_config, raw_result):
     agent_name = 'formula_match'
     print("start preparing formula")
     # Load subsection structure and formula info
-    subsection_json = json.load(open(f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_raw_content.json', 'r'))
-    formula_json = json.load(open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/{args.paper_name}_formula_sections.json', 'r'))
+    subsection_json = json.load(open(raw_content_path(args), 'r'))
+    formula_json = json.load(open(formula_sections_path(args), 'r'))
     start_time = time.time()
     # Load prompt template
     with open(f"utils/prompt_templates/{agent_name}.yaml", "r") as f:
@@ -129,7 +136,8 @@ def gen_formula_match_v1(args, actor_config, raw_result):
     print("time_taken:",time_taken)
     # Parse and save response
     formula_match = get_json_from_response(res_result)
-    save_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_formula_match.json"
+    save_path = formula_match_path(args)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     with open(save_path, "w") as f:
         json.dump(formula_match, f, indent=4)
 
@@ -147,10 +155,9 @@ def build_formula_json(
     print("start build_formula_json")
     results = []
     total_in, total_out = 0, 0
-    paper_outline_json = f'contents/{args.model_name_t}_{args.model_name_v}_{args.paper_name}_raw_content.json' 
+    paper_outline_json = str(raw_content_path(args))
     pattern = re.compile(r"page_(\d+)_formula_(\d+)\.png")
-    formula_imgs_paths = f"contents/{args.paper_name}/formula_images"
-    folder = Path(formula_imgs_paths)
+    folder = formula_images_dir(args)
     start_time = time.time()
     for img_path in folder.iterdir():
         if img_path.is_file():
@@ -247,7 +254,8 @@ def build_formula_json(
     end_time = time.time()
     time_taken = end_time - start_time
     print("time_taken:",time_taken)
-    output_path = f"contents/{args.paper_name}/formula_index.json"
+    output_path = formula_index_path(args)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=4)
     print("results",results)

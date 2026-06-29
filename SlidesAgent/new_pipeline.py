@@ -403,6 +403,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
         paper_name = append_outline_mode_suffix(args.paper_name, args.outline_mode)
         args.paper_name = paper_name
 
+    # Share extracted paper assets between baseline and personalized variants.
+    # Output folders/plans may differ by suffix, but the underlying paper assets should not.
+    args.asset_paper_name = args.paper_name
+
     agent_config_t = get_agent_config(args.model_name_t)
     agent_config_v = get_agent_config(args.model_name_v)
     total_input_tokens_t, total_output_tokens_t = 0, 0
@@ -414,6 +418,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     args.paper_name = append_output_folder_suffix(args.paper_name, getattr(args, "output_folder_suffix", ""))
     detail_log['output_paper_name'] = args.paper_name
+    detail_log['asset_paper_name'] = args.asset_paper_name
     detail_log['output_dir'] = str(getattr(args, "output_dir", "."))
     detail_log['requested_personalized_run'] = requested_personalized
     detail_log['effective_use_author_preferences'] = getattr(args, "use_author_preferences", False)

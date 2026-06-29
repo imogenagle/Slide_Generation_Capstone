@@ -7,12 +7,30 @@ from tenacity import retry, stop_after_attempt
 from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 from pathlib import Path
 import os
+from SlidesAgent.output_paths import (
+    asset_paper_name,
+    formula_crop_path,
+    formulas_json_path,
+    formula_sections_path,
+    html_referenced_path,
+    images_json_path,
+    markdown_embedded_path,
+    markdown_referenced_path,
+    page_image_path,
+    paper_image_tables_dir,
+    paper_output_dir,
+    picture_image_path,
+    raw_content_path,
+    table_image_path,
+    tables_json_path,
+)
 
 import PIL
 
 from jinja2 import Template
 import re
 import argparse    
+from typing import Any
 
 load_dotenv()
 IMAGE_RESOLUTION_SCALE = 5.0
@@ -105,6 +123,74 @@ def _page_size_from_doc(doc, page_no: int):
         return None, None
     return getattr(size, "width", None), getattr(size, "height", None)
 
+
+def _get_prov_items(el):
+    prov = getattr(el, "prov", None) or getattr(el, "provenance", None)
+    if prov is None:
+        return []
+    if isinstance(prov, (list, tuple)):
+        return list(prov)
+    return [prov]
+
+
+def _get_page_no_from_el(el):
+    prov_items = _get_prov_items(el)
+    if prov_items:
+        page_no = getattr(prov_items[0], "page_no", None)
+        if page_no is not None:
+            return page_no
+    return getattr(el, "page_no", None)
+
+
+def _get_formula_text(el) -> str:
+    for attr_name in ("latex", "text", "content", "orig"):
+        value = getattr(el, attr_name, None)
+        if value is None:
+            continue
+        value = str(value).strip()
+        if value:
+            return value
+    return ""
+
+
+def _looks_like_formula_screenshot(
+    formula_text: str,
+    crop_width: int | None,
+    crop_height: int | None,
+    page_width: int | None,
+    page_height: int | None,
+) -> bool:
+    if not all(isinstance(v, (int, float)) and v > 0 for v in (crop_width, crop_height, page_width, page_height)):
+        return False
+
+    width_ratio = float(crop_width) / float(page_width)
+    height_ratio = float(crop_height) / float(page_height)
+    area_ratio = float(crop_width * crop_height) / float(page_width * page_height)
+    aspect = float(crop_width) / float(crop_height) if crop_height else None
+
+    normalized_text = " ".join(str(formula_text or "").split())
+    text_len = len(normalized_text)
+    alpha_chars = sum(ch.isalpha() for ch in normalized_text)
+    digit_chars = sum(ch.isdigit() for ch in normalized_text)
+    symbol_chars = sum(ch in "=+-/*^_()[]{}<>|∏∑λ∀∈≤≥≈×÷" for ch in normalized_text)
+    natural_language_heavy = alpha_chars > max(80, symbol_chars * 3)
+
+    if area_ratio >= 0.18:
+        return True
+    if height_ratio >= 0.34 and width_ratio >= 0.18:
+        return True
+    if height_ratio >= 0.28 and text_len >= 220:
+        return True
+    if height_ratio >= 0.22 and natural_language_heavy and text_len >= 140:
+        return True
+    if area_ratio >= 0.10 and natural_language_heavy and text_len >= 180:
+        return True
+    if aspect is not None and aspect < 0.9 and text_len >= 120:
+        return True
+    if digit_chars < 3 and symbol_chars < 5 and natural_language_heavy and text_len >= 120:
+        return True
+    return False
+
 def _doc_bbox_bottomleft_to_xyxy(bbox: dict, page_h: float):
     
     l = float(bbox["l"]); r = float(bbox["r"])
@@ -126,22 +212,20 @@ def export_formula_crops_from_texts(args,raw_result ):
     doc = conv_res.document
      
     pdf = fitz.open(str(args.paper_path))
-    out_root = Path(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}')
+    out_root = paper_image_tables_dir(args)
     out_root.mkdir(parents=True, exist_ok=True)
-    out_json = out_root / f"{args.paper_name}_formulas.json"
+    out_json = formulas_json_path(args)
 
     formulas = {}
+    skipped_formula_screenshot_like = 0
     idx = 1
 
     for el in getattr(doc, "texts", []):
         if str(getattr(el, "label", "")).lower() != "formula":
             continue
-        raw = (getattr(el, "latex", None) or getattr(el, "text", "") or getattr(el, "content", "") or "")
-        text = str(raw).strip()
-        print("text")
-        # text = (getattr(el, "text", "") or "").strip()
-        prov = getattr(el, "prov", None) or getattr(el, "provenance", None)
-        if not text or not prov or len(prov) == 0:
+        text = _get_formula_text(el)
+        prov = _get_prov_items(el)
+        if not text or not prov:
             continue
 
         pno = getattr(prov[0], "page_no", None)
@@ -178,7 +262,7 @@ def export_formula_crops_from_texts(args,raw_result ):
         scale = IMAGE_RESOLUTION_SCALE
  
          
-        out_png = out_root / f"{args.paper_name}-formula-{idx}.png"
+        out_png = formula_crop_path(args, idx)
         try:
             page = pdf[(pno - 1)]
             pm = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=fitz.Rect(x0, y0, x1, y1))
@@ -197,6 +281,26 @@ def export_formula_crops_from_texts(args,raw_result ):
             aspect = width / height if height else None
         except Exception:
             pass
+
+        page = doc.pages.get(int(pno)) if getattr(doc, "pages", None) else None
+        page_img = getattr(getattr(page, "image", None), "pil_image", None)
+        page_img_w = getattr(page_img, "width", None)
+        page_img_h = getattr(page_img, "height", None)
+
+        if _looks_like_formula_screenshot(
+            formula_text=text,
+            crop_width=width,
+            crop_height=height,
+            page_width=page_img_w,
+            page_height=page_img_h,
+        ):
+            skipped_formula_screenshot_like += 1
+            print(
+                f"[Formulas] Skipping screenshot-like formula crop idx={idx} page={pno} "
+                f"crop={width}x{height} page={page_img_w}x{page_img_h}"
+            )
+            idx += 1
+            continue
 
         formulas[str(idx)] = {
             "text": text,
@@ -217,6 +321,8 @@ def export_formula_crops_from_texts(args,raw_result ):
     print(f"[Formulas] JSON: {out_json}")
     print(f"[Formulas] PNG dir: {out_root}")
     print(f"[Formulas] total: {len(formulas)}")
+    if skipped_formula_screenshot_like:
+        print(f"[Formulas] skipped screenshot-like crops: {skipped_formula_screenshot_like}")
     return formulas,conv_res
 
 from pathlib import Path
@@ -227,20 +333,17 @@ import re, json
 def export_formula_sections_grouped_json_from_texts(args, conv_res, max_page_no_exclusive: int = 12):
  
     doc = conv_res.document
-    out_root = Path(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}')
+    out_root = paper_image_tables_dir(args)
     out_root.mkdir(parents=True, exist_ok=True)
-    out_json = out_root / f"{args.paper_name}_formula_sections.json"
-
-    def _get_prov(el):
-        return getattr(el, "prov", None) or getattr(el, "provenance", None)
+    out_json = formula_sections_path(args)
+    debug_json = out_root / f"{asset_paper_name(args)}_formula_debug.json"
 
     def _get_page_no(el):
-        prov = _get_prov(el)
-        return getattr(prov[0], "page_no", None) if prov and len(prov) > 0 else None
+        return _get_page_no_from_el(el)
 
     def _get_bbox_t(el):
-        prov = _get_prov(el)
-        bb = getattr(prov[0], "bbox", None) if prov and len(prov) > 0 else None
+        prov = _get_prov_items(el)
+        bb = getattr(prov[0], "bbox", None) if prov else None
         if isinstance(bb, dict):
             return bb.get("t", None)
         if bb is not None:
@@ -264,8 +367,13 @@ def export_formula_sections_grouped_json_from_texts(args, conv_res, max_page_no_
 
     def _is_section_header(txt, label: str) -> bool:
         if not txt: return False
-        if _re_heading_num.match(txt): return True
         lab = (label or "").lower()
+        if lab == "page_footer":
+            return False
+        if txt.strip().isdigit():
+            return False
+        if _re_heading_num.match(txt) and re.search(r"[A-Za-z]", txt):
+            return True
         return ("section" in lab and "header" in lab)
 
     def _heading_level(title: str) -> int:
@@ -273,19 +381,53 @@ def export_formula_sections_grouped_json_from_texts(args, conv_res, max_page_no_
         return 1 + m.group(1).count(".") if m else 99
 
     # -------- linearize all content --------
+    label_counts: dict[str, int] = {}
+    skipped_after_page_cap = 0
+    formula_missing_text_count = 0
+    formula_missing_page_count = 0
+    candidate_formula_examples: list[dict[str, Any]] = []
+    dropped_formula_examples: list[dict[str, Any]] = []
+    kept_text_examples: list[dict[str, Any]] = []
+    skipped_garbage_examples: list[dict[str, Any]] = []
+    header_examples: list[dict[str, Any]] = []
     linear = []
     for el in getattr(doc, "texts", []):
         label = str(getattr(el, "label", "")).lower()
+        label_counts[label] = label_counts.get(label, 0) + 1
         page_no = _get_page_no(el)
-        if page_no is None or page_no >= max_page_no_exclusive:
+        if page_no is None:
+            if label == "formula":
+                formula_missing_page_count += 1
+                if len(dropped_formula_examples) < 25:
+                    dropped_formula_examples.append({
+                        "reason": "missing_page_no",
+                        "text": _get_formula_text(el)[:300],
+                    })
+            continue
+        if page_no >= max_page_no_exclusive:
+            if page_no is not None and page_no >= max_page_no_exclusive:
+                skipped_after_page_cap += 1
             continue
         y_top = _get_bbox_t(el)
         y_top = float(y_top) if y_top is not None else -1e9
-        text = _norm(getattr(el, "text", "") or "")
+        text = _norm(_get_formula_text(el) if label == "formula" else (getattr(el, "text", "") or ""))
         if not text:
+            if label == "formula":
+                formula_missing_text_count += 1
+                if len(dropped_formula_examples) < 25:
+                    dropped_formula_examples.append({
+                        "reason": "missing_formula_text",
+                        "page_no": page_no,
+                    })
             continue
 
         if label == "formula":
+            if len(candidate_formula_examples) < 25:
+                candidate_formula_examples.append({
+                    "page_no": page_no,
+                    "label": label,
+                    "text": text[:300],
+                })
             linear.append({
                 "kind": "formula",
                 "latex": _clean_latex(text),
@@ -293,6 +435,12 @@ def export_formula_sections_grouped_json_from_texts(args, conv_res, max_page_no_
                 "y_top": y_top
             })
         elif _is_text_label(label):
+            if len(kept_text_examples) < 25:
+                kept_text_examples.append({
+                    "page_no": page_no,
+                    "label": label,
+                    "text": text[:300],
+                })
             linear.append({
                 "kind": "text",
                 "content": text,
@@ -300,6 +448,12 @@ def export_formula_sections_grouped_json_from_texts(args, conv_res, max_page_no_
                 "y_top": y_top
             })
         elif _is_section_header(text, label):
+            if len(header_examples) < 25:
+                header_examples.append({
+                    "page_no": page_no,
+                    "label": label,
+                    "title": text[:300],
+                })
             linear.append({
                 "kind": "header",
                 "title": text,
@@ -357,6 +511,11 @@ def export_formula_sections_grouped_json_from_texts(args, conv_res, max_page_no_
         elif item["kind"] in {"text", "formula"}:
             if item["kind"] == "text":
                 if is_garbage_text(item["content"]):
+                    if len(skipped_garbage_examples) < 25:
+                        skipped_garbage_examples.append({
+                            "page_no": item["page_no"],
+                            "text": str(item["content"])[:300],
+                        })
                     continue
             cur_section["content"].append({
                 "type": item["kind"],
@@ -371,7 +530,36 @@ def export_formula_sections_grouped_json_from_texts(args, conv_res, max_page_no_
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(sections, f, ensure_ascii=False, indent=2)
 
+    debug_payload = {
+        "paper_name": asset_paper_name(args),
+        "max_page_no_exclusive": max_page_no_exclusive,
+        "raw_text_element_count": len(getattr(doc, "texts", [])),
+        "label_counts": label_counts,
+        "skipped_after_page_cap": skipped_after_page_cap,
+        "formula_missing_page_count": formula_missing_page_count,
+        "formula_missing_text_count": formula_missing_text_count,
+        "linear_item_count": len(linear),
+        "linear_formula_count": sum(1 for item in linear if item["kind"] == "formula"),
+        "linear_text_count": sum(1 for item in linear if item["kind"] == "text"),
+        "linear_header_count": sum(1 for item in linear if item["kind"] == "header"),
+        "output_section_count": len(sections),
+        "output_formula_count": sum(
+            1
+            for section in sections
+            for content_item in list(section.get("content") or [])
+            if isinstance(content_item, dict) and content_item.get("type") == "formula"
+        ),
+        "candidate_formula_examples": candidate_formula_examples,
+        "dropped_formula_examples": dropped_formula_examples,
+        "header_examples": header_examples,
+        "kept_text_examples": kept_text_examples,
+        "skipped_garbage_examples": skipped_garbage_examples,
+    }
+    with open(debug_json, "w", encoding="utf-8") as f:
+        json.dump(debug_payload, f, ensure_ascii=False, indent=2)
+
     print(f"[LinearSections] Saved to {out_json}")
+    print(f"[LinearSections] Debug saved to {debug_json}")
     print(f"[LinearSections] Sections: {len(sections)}")
     return sections
  
@@ -510,14 +698,13 @@ def parse_raw(args, actor_config, version=1):
     #     raise
     end_time = time.time()
     time_taken = end_time - start_time
-    os.makedirs(f'contents/{args.paper_name}', exist_ok=True)
+    output_dir = paper_output_dir(args)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    raw_content_path = (
-        f'contents/{args.paper_name}/'
-        f'<{args.model_name_t}_{args.model_name_v}>_raw_content.json'
-    )
-    print(f"[parse_raw] Writing raw content to {raw_content_path}", flush=True)
-    with open(raw_content_path, "w", encoding="utf-8") as handle:
+    outline_path = raw_content_path(args)
+    outline_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[parse_raw] Writing raw content to {outline_path}", flush=True)
+    with open(outline_path, "w", encoding="utf-8") as handle:
         json.dump(content_json, handle, indent=4)
     print("[parse_raw] Raw parsing stage complete", flush=True)
     return input_token, output_token, time_taken, raw_result
@@ -556,7 +743,7 @@ def gen_image_and_table(args, conv_res):
     input_token, output_token = 0, 0
     raw_source = args.paper_path
 
-    output_dir = Path(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}')
+    output_dir = paper_image_tables_dir(args)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     doc_filename = args.paper_name
@@ -564,7 +751,7 @@ def gen_image_and_table(args, conv_res):
     # Save page images
     for page_no, page in conv_res.document.pages.items():
         page_no = page.page_no
-        page_image_filename = output_dir / f"{doc_filename}-{page_no}.png"
+        page_image_filename = page_image_path(args, page_no)
         with page_image_filename.open("wb") as fp:
             page.image.pil_image.save(fp, format="PNG")
  
@@ -593,14 +780,14 @@ def gen_image_and_table(args, conv_res):
         pil_box = tl_bbox.scaled(scale=scale).as_tuple() 
         left, top, right, bottom = pil_box
         cropped = full_img.crop((left, top, right, bottom))  
-        cropped.save( f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/{args.paper_name}-picture-{i+1}.png')
+        cropped.save(str(picture_image_path(args, i + 1)))
     
     table_counter = 0 
     for element, _level in conv_res.document.iterate_items():
         if isinstance(element, TableItem):
             table_counter += 1
             element_image_filename = (
-                output_dir / f"{doc_filename}-table-{table_counter}.png"
+                table_image_path(args, table_counter)
             )
             with element_image_filename.open("wb") as fp:
                 element.get_image(conv_res.document).save(fp, "PNG")
@@ -610,19 +797,19 @@ def gen_image_and_table(args, conv_res):
     # downstream slide-generation pipeline. On some synced macOS folders, PIL/Docling
     # can time out while saving referenced image assets, so we treat them as best effort.
     try:
-        md_filename = output_dir / f"{doc_filename}-with-images.md"
+        md_filename = markdown_embedded_path(args)
         conv_res.document.save_as_markdown(md_filename, image_mode=ImageRefMode.EMBEDDED)
     except (TimeoutError, OSError) as exc:
         print(f"[warning] Skipping embedded markdown export: {exc}")
 
     try:
-        md_filename = output_dir / f"{doc_filename}-with-image-refs.md"
+        md_filename = markdown_referenced_path(args)
         conv_res.document.save_as_markdown(md_filename, image_mode=ImageRefMode.REFERENCED)
     except (TimeoutError, OSError) as exc:
         print(f"[warning] Skipping referenced markdown export: {exc}")
 
     try:
-        html_filename = output_dir / f"{doc_filename}-with-image-refs.html"
+        html_filename = html_referenced_path(args)
         conv_res.document.save_as_html(html_filename, image_mode=ImageRefMode.REFERENCED)
     except (TimeoutError, OSError) as exc:
         print(f"[warning] Skipping HTML export: {exc}")
@@ -633,12 +820,12 @@ def gen_image_and_table(args, conv_res):
     for table in conv_res.document.tables:
         caption = table.caption_text(conv_res.document)
         if len(caption) > 0:
-            table_img_path = f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/{args.paper_name}-table-{table_index}.png'
+            table_img_path = table_image_path(args, table_index)
             table_img = PIL.Image.open(table_img_path)
             tables[str(table_index)] = {
                 'caption': caption,
                 'page_no': table.prov[0].page_no,
-                'table_path': table_img_path,
+                'table_path': str(table_img_path),
                 'width': table_img.width,
                 'height': table_img.height,
                 'figure_size': table_img.width * table_img.height,
@@ -653,12 +840,12 @@ def gen_image_and_table(args, conv_res):
         caption = image.caption_text(conv_res.document) 
         print(f"[{i}] caption: {caption}")
         if len(caption) > 0:
-            image_img_path = f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/{args.paper_name}-picture-{image_index}.png'
+            image_img_path = picture_image_path(args, image_index)
             image_img = PIL.Image.open(image_img_path)
             images[str(image_index)] = {
                 'caption': caption,
                 'page_no': image.prov[0].page_no,
-                'image_path': image_img_path,
+                'image_path': str(image_img_path),
                 'width': image_img.width,
                 'height': image_img.height,
                 'figure_size': image_img.width * image_img.height,
@@ -666,8 +853,12 @@ def gen_image_and_table(args, conv_res):
             }
         image_index += 1
 
-    json.dump(images, open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}_images.json', 'w'), indent=4)
-    json.dump(tables, open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}_tables.json', 'w'), indent=4)
+    images_path = images_json_path(args)
+    tables_path = tables_json_path(args)
+    images_path.parent.mkdir(parents=True, exist_ok=True)
+    tables_path.parent.mkdir(parents=True, exist_ok=True)
+    json.dump(images, open(images_path, 'w'), indent=4)
+    json.dump(tables, open(tables_path, 'w'), indent=4)
 
     return input_token, output_token, images, tables
 

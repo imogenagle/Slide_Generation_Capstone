@@ -303,7 +303,7 @@ def main() -> None:
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--baseline-plan", type=Path, required=True)
     parser.add_argument("--personalized-plan", type=Path, required=True)
-    parser.add_argument("--model", default="gpt-5")
+    parser.add_argument("--model", default="gpt-5.4-nano")
     parser.add_argument("--prompt-path", type=Path, default=DEFAULT_PROMPT_PATH)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--request-timeout", type=float, default=180.0)

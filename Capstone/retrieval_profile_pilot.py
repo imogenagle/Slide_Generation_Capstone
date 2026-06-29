@@ -38,11 +38,14 @@ from Capstone.preference_distill import (
     resolve_repo_path,
 )
 from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
+from SlidesAgent.apply_color import pick_theme_color
 
 
 DEFAULT_PROMPT_PATH = REPO_ROOT / "utils" / "prompt_templates" / "preference_distiller_target_conditioned.yaml"
 DEFAULT_OUTPUT_DIR_RETRIEVAL = REPO_ROOT / "Capstone" / "profiles_retrieval"
 CORE_NUMERIC_TARGET_KEYS = (
+    "target_slide_count",
+    "target_avg_bullets_per_slide",
     "target_avg_words_per_slide",
     "target_image_slide_count",
     "target_table_slide_count",
@@ -53,7 +56,26 @@ VISUAL_NUMERIC_TARGET_KEYS = (
     "target_table_slide_count",
     "target_formula_slide_count",
 )
+SECTION_LABEL_VOCAB = (
+    "title",
+    "outline",
+    "motivation",
+    "introduction",
+    "background",
+    "related_work",
+    "problem_setup",
+    "data",
+    "method",
+    "training",
+    "experiments",
+    "results",
+    "ablation",
+    "analysis",
+    "limitations",
+    "conclusion",
+)
 TESSERACT_CMD = "/opt/homebrew/bin/tesseract"
+MAX_COLOR_SAMPLE_SLIDES = 12
 
 
 def is_content_policy_error(exc: Exception) -> bool:
@@ -295,6 +317,34 @@ def _coerce_float(raw_value: Any, *, low: float, high: float) -> float | None:
     return round(max(low, min(high, value)), 4)
 
 
+def sanitize_section_preferences(raw_profile: dict[str, Any]) -> dict[str, Any]:
+    raw_planning = dict(raw_profile.get("planning_preferences") or {})
+    raw_labels = raw_planning.get("preferred_section_labels") or []
+    preferred_labels: list[str] = []
+    for raw_label in raw_labels:
+        label = str(raw_label or "").strip().lower()
+        if label in SECTION_LABEL_VOCAB and label not in preferred_labels:
+            preferred_labels.append(label)
+
+    target_section_count = _coerce_float(
+        raw_planning.get("target_section_count"),
+        low=1.0,
+        high=20.0,
+    )
+    section_order_style = str(raw_planning.get("section_order_style") or "").strip().lower()
+    if section_order_style not in {"canonical", "custom", "mixed"}:
+        section_order_style = None
+
+    sanitized: dict[str, Any] = {}
+    if target_section_count is not None:
+        sanitized["target_section_count"] = target_section_count
+    if preferred_labels:
+        sanitized["preferred_section_labels"] = preferred_labels
+    if section_order_style:
+        sanitized["section_order_style"] = section_order_style
+    return sanitized
+
+
 def extract_ocr_text(image_path: Path, *, tesseract_cmd: str = TESSERACT_CMD) -> str:
     try:
         completed = subprocess.run(
@@ -342,6 +392,62 @@ def build_ocr_text_density_summary(selected_papers: list[dict[str, Any]]) -> dic
     }
 
 
+def build_deterministic_slide_count_summary(selected_papers: list[dict[str, Any]]) -> dict[str, Any]:
+    if not selected_papers:
+        return {}
+    closest_paper = selected_papers[0]
+    slide_paths = sorted(
+        [path for path in closest_paper["raw_dir"].iterdir() if path.suffix.lower() in SLIDE_EXTENSIONS],
+        key=numeric_slide_sort_key,
+    )
+    return {
+        "target_slide_count": len(slide_paths),
+        "slide_count_source_paper_id": closest_paper["paper_id"],
+        "slide_count_source_paper_title": closest_paper.get("paper_title"),
+        "slide_count_source_raw_dir": str(closest_paper["raw_dir"]),
+    }
+
+
+def build_deterministic_color_preferences(selected_papers: list[dict[str, Any]]) -> dict[str, Any]:
+    if not selected_papers:
+        return {}
+    closest_paper = selected_papers[0]
+    slide_paths = sorted(
+        [path for path in closest_paper["raw_dir"].iterdir() if path.suffix.lower() in SLIDE_EXTENSIONS],
+        key=numeric_slide_sort_key,
+    )
+    if not slide_paths:
+        return {}
+    if len(slide_paths) > MAX_COLOR_SAMPLE_SLIDES:
+        chosen_indices = {
+            int(round(i * (len(slide_paths) - 1) / max(1, MAX_COLOR_SAMPLE_SLIDES - 1)))
+            for i in range(MAX_COLOR_SAMPLE_SLIDES)
+        }
+        sampled_slide_paths = [path for idx, path in enumerate(slide_paths) if idx in chosen_indices]
+    else:
+        sampled_slide_paths = slide_paths
+
+    try:
+        theme_hex, base_hex = pick_theme_color(
+            images=[str(path) for path in sampled_slide_paths],
+            prefer_dark=True,
+            min_v=0.10,
+            max_v=0.99,
+            return_base_hex=True,
+        )
+    except Exception:
+        return {}
+
+    return {
+        "target_theme_hex": str(theme_hex).strip().upper(),
+        "target_base_hex": str(base_hex).strip().upper(),
+        "color_source_paper_id": closest_paper["paper_id"],
+        "color_source_paper_title": closest_paper.get("paper_title"),
+        "color_source_raw_dir": str(closest_paper["raw_dir"]),
+        "color_sample_slide_count": len(sampled_slide_paths),
+    }
+
+
 def sanitize_numeric_only_profile(
     *,
     raw_profile: dict[str, Any],
@@ -352,10 +458,13 @@ def sanitize_numeric_only_profile(
     selection_strategy: str,
     retrieval_matches: list[dict[str, Any]],
     deterministic_numeric_preferences: dict[str, Any] | None = None,
+    deterministic_color_preferences: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_numeric = dict(raw_profile.get("numeric_preferences") or {})
     deterministic_numeric_preferences = deterministic_numeric_preferences or {}
     specs = {
+        "target_slide_count": (1.0, 100.0),
+        "target_avg_bullets_per_slide": (0.0, 12.0),
         "target_avg_words_per_slide": (0.0, 200.0),
         "target_image_slide_count": (0.0, 100.0),
         "target_table_slide_count": (0.0, 100.0),
@@ -368,21 +477,43 @@ def sanitize_numeric_only_profile(
         value = _coerce_float(raw_numeric.get(key), low=low, high=high)
         if value is not None:
             numeric_preferences[key] = value
+    deterministic_slide_count = _coerce_float(
+        deterministic_numeric_preferences.get("target_slide_count"),
+        low=1.0,
+        high=100.0,
+    )
+    if deterministic_slide_count is not None:
+        numeric_preferences["target_slide_count"] = deterministic_slide_count
+
     deterministic_words = _coerce_float(
         deterministic_numeric_preferences.get("target_avg_words_per_slide"),
         low=0.0,
         high=200.0,
     )
-    if deterministic_words is not None:
+    if deterministic_words is not None and "target_avg_words_per_slide" not in numeric_preferences:
         numeric_preferences["target_avg_words_per_slide"] = deterministic_words
 
     notes = str(((raw_profile.get("evidence_summary") or {}).get("notes")) or "").strip()
     if not notes:
         notes = "Target-conditioned numeric profile distilled from the retrieved historical slide deck."
+    planning_preferences = sanitize_section_preferences(raw_profile)
+    deterministic_color_preferences = deterministic_color_preferences or {}
+    color_preferences: dict[str, Any] = {}
+    for key in (
+        "target_theme_hex",
+        "target_base_hex",
+        "color_source_paper_id",
+        "color_source_paper_title",
+        "color_source_raw_dir",
+        "color_sample_slide_count",
+    ):
+        value = deterministic_color_preferences.get(key)
+        if value is not None:
+            color_preferences[key] = value
 
     return {
         "author_id": author_id,
-        "profile_version": 5,
+        "profile_version": 6,
         "profile_method": "retrieval_conditioned_numeric_only_pilot",
         "distilled_from": {
             "paper_count": len(selected_papers),
@@ -393,8 +524,9 @@ def sanitize_numeric_only_profile(
                 "selection_strategy": "title_similarity_then_recency_fallback",
             },
         },
-        "planning_preferences": {},
+        "planning_preferences": planning_preferences,
         "numeric_preferences": numeric_preferences,
+        "color_preferences": color_preferences,
         "evidence_summary": {
             "notes": notes,
         },
@@ -406,6 +538,12 @@ def sanitize_numeric_only_profile(
             "numeric_target_keys": list(CORE_NUMERIC_TARGET_KEYS),
             "visual_numeric_target_keys": list(VISUAL_NUMERIC_TARGET_KEYS),
             "deterministic_numeric_preferences": deterministic_numeric_preferences,
+            "deterministic_color_preferences": deterministic_color_preferences,
+            "llm_estimated_text_and_bullet_targets": {
+                "target_avg_bullets_per_slide": numeric_preferences.get("target_avg_bullets_per_slide"),
+                "target_avg_words_per_slide": numeric_preferences.get("target_avg_words_per_slide"),
+            },
+            "section_label_vocab": list(SECTION_LABEL_VOCAB),
         },
     }
 
@@ -746,7 +884,13 @@ def main() -> None:
     )
     retrieval_matches = compact_retrieval_matches(ranked, limit=min(5, len(ranked)))
     deck_evidence = build_full_deck_image_evidence(selected_papers)
+    deterministic_slide_count_summary = build_deterministic_slide_count_summary(selected_papers)
     ocr_text_density_summary = build_ocr_text_density_summary(selected_papers)
+    deterministic_color_preferences = build_deterministic_color_preferences(selected_papers)
+    deterministic_numeric_preferences = {
+        **deterministic_slide_count_summary,
+        **ocr_text_density_summary,
+    }
     author_metadata = build_author_metadata(
         author_id=args.author_id,
         authors_rows=authors_rows,
@@ -779,7 +923,9 @@ def main() -> None:
             for item in selected_papers
         ],
         "deck_evidence": deck_evidence,
+        "deterministic_slide_count_summary": deterministic_slide_count_summary,
         "ocr_text_density_summary": ocr_text_density_summary,
+        "deterministic_color_preferences": deterministic_color_preferences,
         "prompt_preview": rendered_prompt["user_prompt"],
     }
     bundle_path.write_text(json.dumps(bundle_payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -806,7 +952,8 @@ def main() -> None:
         target_metadata=target_row,
         selection_strategy=selection_strategy,
         retrieval_matches=retrieval_matches,
-        deterministic_numeric_preferences=ocr_text_density_summary,
+        deterministic_numeric_preferences=deterministic_numeric_preferences,
+        deterministic_color_preferences=deterministic_color_preferences,
     )
     profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Saved retrieval-conditioned profile to {profile_path}")

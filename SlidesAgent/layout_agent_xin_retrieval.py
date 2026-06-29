@@ -37,8 +37,11 @@ from camel.agents import ChatAgent
 
 
 BASE_PROMPT_PATH = Path("utils/prompt_templates/layout_agent_xin.yaml")
+MAX_RETRIEVAL_REPAIR_ROUNDS = 2
 
 RETRIEVAL_TARGET_KEYS = (
+    "target_slide_count",
+    "target_avg_bullets_per_slide",
     "target_avg_words_per_slide",
     "target_image_slide_count",
     "target_table_slide_count",
@@ -50,6 +53,30 @@ COUNT_TARGET_TO_OBSERVED_KEY = {
     "target_table_slide_count": "table_slide_count",
     "target_formula_slide_count": "formula_slide_count",
 }
+
+
+def build_retrieval_section_preferences(profile: Dict[str, Any] | None) -> Dict[str, Any]:
+    if not isinstance(profile, dict):
+        return {}
+    planning = dict(profile.get("planning_preferences") or {})
+    section_prefs: Dict[str, Any] = {}
+    target_section_count = planning.get("target_section_count")
+    if target_section_count is not None:
+        try:
+            section_prefs["target_section_count"] = round(float(target_section_count), 4)
+        except Exception:
+            pass
+    labels = []
+    for raw_label in planning.get("preferred_section_labels") or []:
+        label = str(raw_label or "").strip().lower()
+        if label and label not in labels:
+            labels.append(label)
+    if labels:
+        section_prefs["preferred_section_labels"] = labels
+    order_style = str(planning.get("section_order_style") or "").strip().lower()
+    if order_style in {"canonical", "custom", "mixed"}:
+        section_prefs["section_order_style"] = order_style
+    return section_prefs
 
 def summarize_retrieval_targets(
     plan: Dict[str, Any],
@@ -100,6 +127,8 @@ def build_retrieval_target_summary(profile: Dict[str, Any] | None) -> Dict[str, 
 
 def _target_prompt_label(target_key: str) -> str:
     labels = {
+        "target_slide_count": "total slide count",
+        "target_avg_bullets_per_slide": "average bullets per slide",
         "target_avg_words_per_slide": "average words per slide",
         "target_image_slide_count": "number of slides containing images",
         "target_table_slide_count": "number of slides containing tables",
@@ -146,10 +175,12 @@ def build_retrieval_planner_brief(
     *,
     target_summary: Dict[str, Any],
     budget_summary: Dict[str, Any] | None = None,
+    section_preferences: Dict[str, Any] | None = None,
     asset_support: Dict[str, Any] | None = None,
     observed_summary: Dict[str, Any] | None = None,
 ) -> str:
     budget_summary = budget_summary or {"budget_items": []}
+    section_preferences = section_preferences or {}
     asset_support = asset_support or {}
     lines = [
         "Retrieval-profile personalization targets:",
@@ -157,12 +188,25 @@ def build_retrieval_planner_brief(
         "If multiple faithful slide plans are possible, prefer the one that gets closer to these numeric targets.",
         "Treat count targets as a whole-deck visual budget.",
         "Target definitions:",
+        "- target_slide_count: total number of slides in the deck.",
+        "- target_avg_bullets_per_slide: average number of top-level bullets per slide over the full deck.",
         "- target_avg_words_per_slide: average words per slide over the full deck.",
         "- target_image_slide_count: number of slides containing one or more image assets.",
         "- target_table_slide_count: number of slides containing tables.",
         "- target_formula_slide_count: number of slides containing formulas.",
         "- A slide may count toward multiple categories.",
     ]
+    if section_preferences:
+        lines.append("Section-structure preferences:")
+        if section_preferences.get("target_section_count") is not None:
+            lines.append(f"- typical number of major sections = {section_preferences['target_section_count']}")
+        if section_preferences.get("preferred_section_labels"):
+            lines.append(
+                "- preferred major section labels = "
+                + ", ".join(str(label) for label in section_preferences["preferred_section_labels"])
+            )
+        if section_preferences.get("section_order_style"):
+            lines.append(f"- typical section order style = {section_preferences['section_order_style']}")
     if target_summary:
         lines.append("Numeric targets:")
         for key, value in target_summary.items():
@@ -176,6 +220,8 @@ def build_retrieval_planner_brief(
             )
     if observed_summary:
         lines.append("Current observed retrieval-target metrics:")
+        lines.append(f"- total slide count = {observed_summary.get('slide_count')}")
+        lines.append(f"- average bullets per slide = {observed_summary.get('avg_bullets_per_slide')}")
         lines.append(f"- average words per slide = {observed_summary.get('avg_words_per_slide')}")
         lines.append(f"- image slide count = {observed_summary.get('image_slide_count')}")
         lines.append(f"- table slide count = {observed_summary.get('table_slide_count')}")
@@ -187,11 +233,19 @@ def build_retrieval_planner_brief(
             "- Use images/tables/formulas only when supported by the paper assets.",
             "- Try to hit the exact count targets whenever the paper assets and content support it.",
             "- If exact counts are impossible, get as close as possible and spend scarce assets on the highest-value supported slides first.",
+            "- Use target_slide_count as a whole-deck pacing budget: merge, split, add, or remove slides only when faithful and helpful for target fit.",
+            "- For bullet density, control the number of bullet points carried by each slide.",
+            "- If average bullets per slide is too high, trim, merge, or simplify bullet-heavy slides when faithful.",
+            "- If average bullets per slide is too low, add faithful bullet structure or split prose into concise bullets where appropriate.",
             "- For text density, control the amount of bullet text and explanatory detail per slide.",
             "- If average words per slide is too high, condense, trim, or split dense slides when faithful.",
             "- If average words per slide is too low, merge thin slides or add faithful explanatory detail where needed.",
             "- A single slide may satisfy multiple count budgets at once when that slide legitimately contains multiple modalities.",
             "- Prefer minimum faithful edits that move the deck measurably closer to target.",
+            "- Treat section preferences as early outline constraints, not cosmetic rename requests.",
+            "- When the source paper supports it, try to include the preferred section types in the deck's major narrative structure.",
+            "- Match the typical number of major sections when faithful, but do not invent unsupported sections.",
+            "- Use preferred section labels as soft priors for organizing slides such as motivation, method, experiments, ablation, analysis, limitations, and conclusion.",
         ]
     )
     if asset_support:
@@ -208,6 +262,8 @@ def build_retrieval_mismatches(
     asset_support: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     metric_map = {
+        "target_slide_count": ("slide_count", 1.0),
+        "target_avg_bullets_per_slide": ("avg_bullets_per_slide", 0.75),
         "target_avg_words_per_slide": ("avg_words_per_slide", 4.0),
         "target_image_slide_count": ("image_slide_count", 1.0),
         "target_table_slide_count": ("table_slide_count", 1.0),
@@ -270,7 +326,17 @@ def build_retrieval_repair_directives(
         metric = item["metric"]
         goal = item["goal"]
         change_needed = int(round(abs(float(item.get("delta", 0.0)))))
-        if metric == "target_avg_words_per_slide":
+        if metric == "target_slide_count":
+            if goal == "increase":
+                edit_brief.append(f"Increase deck length by about {max(change_needed, 1)} slide(s) using faithful splits or additional necessary slides.")
+            else:
+                edit_brief.append(f"Reduce deck length by about {max(change_needed, 1)} slide(s) using faithful merges or by removing low-value fragmentation.")
+        elif metric == "target_avg_bullets_per_slide":
+            if goal == "increase":
+                edit_brief.append("Increase bullet structure on sparse slides so the deck moves toward the target average bullets per slide.")
+            else:
+                edit_brief.append("Reduce bullet density on overly busy slides so the deck moves toward the target average bullets per slide.")
+        elif metric == "target_avg_words_per_slide":
             if goal == "increase":
                 edit_brief.append("Increase textual detail on underfilled slides so the deck moves toward the target average words per slide.")
             else:
@@ -314,6 +380,8 @@ def evaluate_retrieval_repair_acceptance(
     score_improvement = round(draft_score - repaired_score, 4)
     measurable_improvements: List[str] = []
     metric_map = {
+        "target_slide_count": "slide_count",
+        "target_avg_bullets_per_slide": "avg_bullets_per_slide",
         "target_avg_words_per_slide": "avg_words_per_slide",
         "target_image_slide_count": "image_slide_count",
         "target_table_slide_count": "table_slide_count",
@@ -368,9 +436,11 @@ def render_retrieval_planner_prompt(
     )
     retrieval_target_summary = build_retrieval_target_summary(profile)
     retrieval_budget_summary = build_retrieval_budget(retrieval_target_summary)
+    retrieval_section_preferences = build_retrieval_section_preferences(profile)
     retrieval_brief = build_retrieval_planner_brief(
         target_summary=retrieval_target_summary,
         budget_summary=retrieval_budget_summary,
+        section_preferences=retrieval_section_preferences,
     )
     return base_prompt + "\n\n" + retrieval_brief
 
@@ -386,6 +456,72 @@ def build_retrieval_repair_prompt(
     repair_directives: Dict[str, Any],
     current_slide_plan: Dict[str, Any],
 ) -> str:
+    explicit_gap_lines: List[str] = []
+    for item in list(repair_directives.get("actionable_targets") or []):
+        metric = str(item.get("metric") or "")
+        observed = float(item.get("observed", 0.0))
+        target = float(item.get("target", 0.0))
+        delta = float(item.get("delta", 0.0))
+        support_note = ""
+        if not item.get("actionable", True):
+            support_note = f" (blocked: {item.get('blocked_reason')})"
+        if metric == "target_slide_count":
+            if delta < 0:
+                explicit_gap_lines.append(
+                    f"- Slide count is too low: current={int(round(observed))}, target={int(round(target))}. Add about {max(int(round(abs(delta))), 1)} slide(s) while staying faithful{support_note}."
+                )
+            else:
+                explicit_gap_lines.append(
+                    f"- Slide count is too high: current={int(round(observed))}, target={int(round(target))}. Remove or merge about {max(int(round(abs(delta))), 1)} slide(s) while staying faithful{support_note}."
+                )
+        elif metric == "target_avg_bullets_per_slide":
+            if delta < 0:
+                explicit_gap_lines.append(
+                    f"- Average bullets per slide is too low: current={observed:.4f}, target={target:.4f}. Increase average bullets per slide by about {abs(delta):.4f}{support_note}."
+                )
+            else:
+                explicit_gap_lines.append(
+                    f"- Average bullets per slide is too high: current={observed:.4f}, target={target:.4f}. Decrease average bullets per slide by about {abs(delta):.4f}{support_note}."
+                )
+        elif metric == "target_avg_words_per_slide":
+            if delta < 0:
+                explicit_gap_lines.append(
+                    f"- Average words per slide is too low: current={observed:.4f}, target={target:.4f}. Increase average words per slide by about {abs(delta):.4f}{support_note}."
+                )
+            else:
+                explicit_gap_lines.append(
+                    f"- Average words per slide is too high: current={observed:.4f}, target={target:.4f}. Decrease average words per slide by about {abs(delta):.4f}{support_note}."
+                )
+        elif metric == "target_image_slide_count":
+            if delta < 0:
+                explicit_gap_lines.append(
+                    f"- Image slide count is too low: current={int(round(observed))}, target={int(round(target))}. Add images to about {max(int(round(abs(delta))), 1)} more slide(s){support_note}."
+                )
+            else:
+                explicit_gap_lines.append(
+                    f"- Image slide count is too high: current={int(round(observed))}, target={int(round(target))}. Remove images from about {max(int(round(abs(delta))), 1)} slide(s){support_note}."
+                )
+        elif metric == "target_table_slide_count":
+            if delta < 0:
+                explicit_gap_lines.append(
+                    f"- Table slide count is too low: current={int(round(observed))}, target={int(round(target))}. Add tables to about {max(int(round(abs(delta))), 1)} more slide(s){support_note}."
+                )
+            else:
+                explicit_gap_lines.append(
+                    f"- Table slide count is too high: current={int(round(observed))}, target={int(round(target))}. Remove tables from about {max(int(round(abs(delta))), 1)} slide(s){support_note}."
+                )
+        elif metric == "target_formula_slide_count":
+            if delta < 0:
+                explicit_gap_lines.append(
+                    f"- Formula slide count is too low: current={int(round(observed))}, target={int(round(target))}. Add formulas to about {max(int(round(abs(delta))), 1)} more slide(s){support_note}."
+                )
+            else:
+                explicit_gap_lines.append(
+                    f"- Formula slide count is too high: current={int(round(observed))}, target={int(round(target))}. Remove formulas from about {max(int(round(abs(delta))), 1)} slide(s){support_note}."
+                )
+
+    explicit_gap_block = "\n".join(explicit_gap_lines) if explicit_gap_lines else "- No explicit actionable gaps were computed."
+
     return f"""
 Revise the existing slide plan so it better matches the retrieval-profile targets.
 
@@ -393,12 +529,23 @@ Hard constraints:
 - Keep the deck faithful to the paper.
 - Revise the current draft directly rather than regenerating from scratch.
 - Preserve section order unless a small local change clearly improves target fit.
+- Preserve the deck's overall fidelity while nudging section structure toward the preferred section labels and typical section count when the source paper supports those changes.
 - Merge/split slides only when it directly improves target fit while staying faithful.
 - Do not invent visuals, tables, formulas, or claims.
 - Use the retrieval-profile targets directly during repair.
 - Treat image/table/formula count targets as a whole-deck budget that should be matched as exactly as possible.
 - Reassign modality usage across slides deliberately: decide which slides should carry images, tables, and formulas so the final deck spends the budget well.
+- If slide count is off target, use faithful merges or splits to move the deck toward the target total number of slides.
+- If average bullets per slide is off target, add, remove, merge, or simplify bullet structure to move toward the target while staying faithful.
 - If average words per slide is off target, condense, expand, merge, or split slides when faithful to the source content.
+- If preferred section types are missing but clearly supported by the source paper, adjust section grouping or section titles to better reflect them.
+- Make concrete, target-seeking edits. Do not just make small stylistic changes; close the measured gaps below as directly as possible.
+- When a modality count is below target, explicitly choose additional slides to carry that modality.
+- When a modality count is above target, explicitly remove that modality from lower-value slides first.
+- When text density is above target, shorten dense slides or split them if faithful. When it is below target, merge thin slides or add faithful explanatory detail.
+
+Measured target gaps to fix:
+{explicit_gap_block}
 
 Retrieval profile:
 {json.dumps(profile, ensure_ascii=False, indent=2)}
@@ -518,53 +665,88 @@ def generate_slide_plan(args: Any):
     acceptance: Dict[str, Any] | None = None
     repair_attempted = False
     repair_report_path: Path | None = None
+    repair_round_reports: List[Dict[str, Any]] = []
+    accepted_round_index: int | None = None
     if author_preference_profile and draft_directives.get("needs_repair"):
         repair_attempted = True
-        repair_prompt = build_retrieval_repair_prompt(
-            raw_json=raw_json,
-            figures_json=figures_json,
-            formulas_json=formulas_json,
-            profile=author_preference_profile,
-            retrieval_target_summary=draft_directives["target_summary"],
-            current_plan_summary=draft_summary,
-            repair_directives=draft_directives,
-            current_slide_plan=slide_plan,
-        )
-        repair_raw_text, repair_in_tok, repair_out_tok, repair_time_taken = call_layout_model(
-            repair_prompt,
-            prompt_cfg.get("repair_system_prompt", prompt_cfg["system_prompt"]),
-            args=args,
-            cfg=cfg,
-            use_gpt5_responses=use_gpt5_responses,
-            client=client if use_gpt5_responses else None,
-            agent=repair_agent if not use_gpt5_responses else None,
-        )
-        repaired_plan = sanitize_slide_plan_templates(get_json_from_response(repair_raw_text))
-        repaired_summary = summarize_retrieval_targets(repaired_plan)
-        repaired_directives = build_retrieval_repair_directives(author_preference_profile, repaired_summary, asset_support)
-        acceptance = evaluate_retrieval_repair_acceptance(draft_summary, repaired_summary, draft_directives, repaired_directives)
+        current_plan = slide_plan
+        current_summary = draft_summary
+        current_directives = draft_directives
+        for repair_round in range(1, MAX_RETRIEVAL_REPAIR_ROUNDS + 1):
+            if not current_directives.get("needs_repair"):
+                break
+            repair_prompt = build_retrieval_repair_prompt(
+                raw_json=raw_json,
+                figures_json=figures_json,
+                formulas_json=formulas_json,
+                profile=author_preference_profile,
+                retrieval_target_summary=current_directives["target_summary"],
+                current_plan_summary=current_summary,
+                repair_directives=current_directives,
+                current_slide_plan=current_plan,
+            )
+            repair_raw_text, repair_in_tok, repair_out_tok, repair_time_taken = call_layout_model(
+                repair_prompt,
+                prompt_cfg.get("repair_system_prompt", prompt_cfg["system_prompt"]),
+                args=args,
+                cfg=cfg,
+                use_gpt5_responses=use_gpt5_responses,
+                client=client if use_gpt5_responses else None,
+                agent=repair_agent if not use_gpt5_responses else None,
+            )
+            candidate_plan = sanitize_slide_plan_templates(get_json_from_response(repair_raw_text))
+            candidate_summary = summarize_retrieval_targets(candidate_plan)
+            candidate_directives = build_retrieval_repair_directives(author_preference_profile, candidate_summary, asset_support)
+            round_acceptance = evaluate_retrieval_repair_acceptance(
+                current_summary,
+                candidate_summary,
+                current_directives,
+                candidate_directives,
+            )
+            repair_round_reports.append(
+                {
+                    "round": repair_round,
+                    "input_summary": current_summary,
+                    "input_repair_directives": current_directives,
+                    "candidate_summary": candidate_summary,
+                    "candidate_repair_directives": candidate_directives,
+                    "acceptance": round_acceptance,
+                }
+            )
+            if round_acceptance.get("accepted"):
+                current_plan = candidate_plan
+                current_summary = candidate_summary
+                current_directives = candidate_directives
+                accepted_round_index = repair_round
+                in_tok += repair_in_tok
+                out_tok += repair_out_tok
+                time_taken += repair_time_taken
+                if not current_directives.get("needs_repair"):
+                    break
+            else:
+                break
+        slide_plan = current_plan
+        draft_summary = current_summary
+        draft_directives = current_directives
+        if repair_round_reports:
+            last_round = repair_round_reports[-1]
+            repaired_summary = last_round.get("candidate_summary")
+            repaired_directives = last_round.get("candidate_repair_directives")
+            acceptance = last_round.get("acceptance")
         repair_report_path = slide_plan_repair_report_path(args, plan_variant_suffix(args))
         repair_report_path.write_text(
             json.dumps(
                 {
-                    "draft_summary": draft_summary,
-                    "draft_repair_directives": draft_directives,
-                    "repaired_summary": repaired_summary,
-                    "repaired_repair_directives": repaired_directives,
-                    "acceptance": acceptance,
+                    "accepted_round_index": accepted_round_index,
+                    "repair_round_reports": repair_round_reports,
+                    "final_summary_after_repairs": draft_summary,
+                    "final_repair_directives_after_repairs": draft_directives,
                 },
                 indent=2,
                 ensure_ascii=False,
             ),
             encoding="utf-8",
         )
-        if acceptance.get("accepted"):
-            slide_plan = repaired_plan
-            draft_summary = repaired_summary
-            draft_directives = repaired_directives
-            in_tok += repair_in_tok
-            out_tok += repair_out_tok
-            time_taken += repair_time_taken
 
     final_plan_path = slide_plan_path(args, plan_variant_suffix(args))
     final_plan_path.parent.mkdir(parents=True, exist_ok=True)
@@ -594,9 +776,13 @@ def generate_slide_plan(args: Any):
         "repair": {
             "attempted": repair_attempted,
             "accepted": bool(acceptance and acceptance.get("accepted")),
+            "accepted_round_index": accepted_round_index,
+            "max_rounds": MAX_RETRIEVAL_REPAIR_ROUNDS,
+            "round_count": len(repair_round_reports),
             "acceptance": acceptance,
             "repaired_summary": repaired_summary,
             "repaired_repair_directives": repaired_directives,
+            "round_reports": repair_round_reports,
         },
         "paths": {
             "paper_outline_json": str(paper_outline_json),
