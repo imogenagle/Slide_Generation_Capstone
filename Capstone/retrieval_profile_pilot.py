@@ -16,6 +16,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import fitz
 import yaml
 from dotenv import load_dotenv
 from jinja2 import Environment, StrictUndefined
@@ -76,6 +77,8 @@ SECTION_LABEL_VOCAB = (
 )
 TESSERACT_CMD = "/opt/homebrew/bin/tesseract"
 MAX_COLOR_SAMPLE_SLIDES = 12
+MAX_ABSTRACT_CHARS = 1800
+MAX_LLM_RERANK_CANDIDATES = 12
 
 
 def is_content_policy_error(exc: Exception) -> bool:
@@ -149,6 +152,47 @@ def title_similarity_breakdown(target_title: str, candidate_title: str) -> dict[
     }
 
 
+def extract_pdf_front_matter(pdf_path: str | Path, *, max_pages: int = 2) -> str:
+    try:
+        doc = fitz.open(str(pdf_path))
+    except Exception:
+        return ""
+    chunks: list[str] = []
+    try:
+        for page_index in range(min(max_pages, len(doc))):
+            try:
+                chunks.append(doc.load_page(page_index).get_text("text"))
+            except Exception:
+                continue
+    finally:
+        doc.close()
+    text = "\n".join(chunks)
+    text = text.replace("\x00", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def extract_abstract_excerpt(pdf_path: str | Path) -> str:
+    text = extract_pdf_front_matter(pdf_path, max_pages=2)
+    if not text:
+        return ""
+
+    match = re.search(
+        r"\babstract\b[\s.:;-]*(.+?)(?=\b(?:introduction|1\s+introduction|keywords?|related work|preliminaries|background)\b)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        excerpt = match.group(1).strip()
+    else:
+        excerpt = text
+
+    excerpt = re.sub(r"\s+", " ", excerpt).strip()
+    if len(excerpt) > MAX_ABSTRACT_CHARS:
+        excerpt = excerpt[:MAX_ABSTRACT_CHARS].rsplit(" ", 1)[0].strip()
+    return excerpt
+
+
 def infer_year_from_split(split_value: str) -> int:
     split = (split_value or "").strip().lower()
     match = re.search(r"(\d{2,4})", split)
@@ -187,6 +231,7 @@ def resolve_target_row(
             "paper_pdf_path": str(resolved_pdf),
             "record_id": row.get("record_id", ""),
             "split": row.get("split", ""),
+            "abstract_excerpt": extract_abstract_excerpt(resolved_pdf),
         }
 
     if target_paper_path is None:
@@ -209,6 +254,7 @@ def resolve_target_row(
             "paper_pdf_path": str(resolved_pdf),
             "record_id": row.get("record_id", ""),
             "split": row.get("split", ""),
+            "abstract_excerpt": extract_abstract_excerpt(resolved_pdf),
         }
 
     title = target_paper_path.stem.replace("_", " ").replace("-", " ").strip()
@@ -218,6 +264,7 @@ def resolve_target_row(
         "paper_pdf_path": str(target_paper_path.resolve()),
         "record_id": "",
         "split": "",
+        "abstract_excerpt": extract_abstract_excerpt(target_paper_path.resolve()),
     }
 
 
@@ -259,6 +306,7 @@ def select_candidate_papers(
                 "raw_dir": raw_dir,
                 "paper_pdf_path": str(resolve_repo_path(paper_pdf_path)),
                 "slide_image_count": int(str(row.get("slide_image_count", "0") or "0")),
+                "abstract_excerpt": extract_abstract_excerpt(resolve_repo_path(paper_pdf_path)),
             }
         )
     return candidates
@@ -282,6 +330,107 @@ def rank_candidates(target_title: str, candidates: list[dict[str, Any]]) -> list
         )
     )
     return ranked
+
+
+def rank_candidates_with_llm(
+    *,
+    target_metadata: dict[str, Any],
+    ranked_candidates: list[dict[str, Any]],
+    model_name: str,
+    max_candidates: int = MAX_LLM_RERANK_CANDIDATES,
+) -> list[dict[str, Any]]:
+    if not ranked_candidates:
+        return ranked_candidates
+
+    client = build_openai_client()
+    resolved_model_name = resolve_direct_model_name(model_name)
+    candidate_subset = ranked_candidates[:max_candidates]
+    payload = {
+        "target_paper": {
+            "paper_id": target_metadata.get("paper_id"),
+            "paper_title": target_metadata.get("paper_title"),
+            "abstract_excerpt": target_metadata.get("abstract_excerpt", ""),
+        },
+        "candidate_papers": [
+            {
+                "paper_id": candidate.get("paper_id"),
+                "paper_title": candidate.get("paper_title"),
+                "abstract_excerpt": candidate.get("abstract_excerpt", ""),
+                "title_similarity": (candidate.get("similarity") or {}).get("combined"),
+            }
+            for candidate in candidate_subset
+        ],
+    }
+    system_prompt = (
+        "You are ranking historical papers for presentation-style retrieval. "
+        "Compare the target paper to candidate papers using semantic similarity of title and abstract. "
+        "Prefer candidates with similar task, method, setting, or contribution style. "
+        "Return JSON only."
+    )
+    user_prompt = (
+        "Rank the candidate papers by how semantically related they are to the target paper.\n"
+        "Use both title and abstract excerpt. Do not rely only on lexical overlap.\n"
+        "Return exactly this JSON shape:\n"
+        "{\n"
+        '  "ranked_candidates": [\n'
+        '    {"paper_id": "paper-id", "relevance_score": 0.0, "rationale": "short explanation"}\n'
+        "  ]\n"
+        "}\n\n"
+        f"Data:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+    request_kwargs = {
+        "model": resolved_model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.0,
+    }
+    if "gpt-5" in resolved_model_name.lower():
+        request_kwargs["max_completion_tokens"] = 1400
+    else:
+        request_kwargs["max_tokens"] = 1400
+
+    response = client.chat.completions.create(**request_kwargs)
+    raw_text = response.choices[0].message.content or ""
+    parsed = extract_json_object(raw_text)
+    ranked_outputs = list(parsed.get("ranked_candidates") or [])
+    llm_map: dict[str, dict[str, Any]] = {}
+    for item in ranked_outputs:
+        paper_id = str(item.get("paper_id") or "").strip()
+        if not paper_id:
+            continue
+        try:
+            score = float(item.get("relevance_score"))
+        except Exception:
+            continue
+        if score != score or score in (float("inf"), float("-inf")):
+            continue
+        llm_map[paper_id] = {
+            "score": round(max(0.0, min(1.0, score)), 4),
+            "rationale": str(item.get("rationale") or "").strip(),
+        }
+
+    reranked: list[dict[str, Any]] = []
+    for idx, candidate in enumerate(ranked_candidates):
+        enriched = dict(candidate)
+        if candidate.get("paper_id") in llm_map:
+            enriched["llm_similarity"] = llm_map[candidate["paper_id"]]
+            enriched["llm_rerank_applied"] = True
+        else:
+            enriched["llm_similarity"] = None
+            enriched["llm_rerank_applied"] = idx < max_candidates
+        reranked.append(enriched)
+
+    reranked.sort(
+        key=lambda item: (
+            -float(((item.get("llm_similarity") or {}).get("score")) or -1.0),
+            -float((item.get("similarity") or {}).get("combined", 0.0)),
+            -int(item.get("slide_image_count", 0)),
+            str(item.get("paper_id", "")),
+        )
+    )
+    return reranked
 
 
 def select_retrieved_papers(
@@ -342,6 +491,33 @@ def sanitize_section_preferences(raw_profile: dict[str, Any]) -> dict[str, Any]:
         sanitized["preferred_section_labels"] = preferred_labels
     if section_order_style:
         sanitized["section_order_style"] = section_order_style
+    return sanitized
+
+
+def _sanitize_font_name(raw_value: Any) -> str | None:
+    value = str(raw_value or "").strip()
+    if not value:
+        return None
+    value = re.sub(r"\s+", " ", value)
+    value = value.strip(" .,:;|-")
+    if not value:
+        return None
+    lowered = value.lower()
+    if lowered in {"unknown", "unsure", "unclear", "none", "null", "n/a", "na"}:
+        return None
+    return value[:80]
+
+
+def sanitize_font_preferences(raw_profile: dict[str, Any]) -> dict[str, Any]:
+    raw_fonts = dict(raw_profile.get("font_preferences") or {})
+    title_font_name = _sanitize_font_name(raw_fonts.get("title_font_name"))
+    body_font_name = _sanitize_font_name(raw_fonts.get("body_font_name"))
+
+    sanitized: dict[str, Any] = {}
+    if title_font_name is not None:
+        sanitized["title_font_name"] = title_font_name
+    if body_font_name is not None:
+        sanitized["body_font_name"] = body_font_name
     return sanitized
 
 
@@ -497,6 +673,7 @@ def sanitize_numeric_only_profile(
     if not notes:
         notes = "Target-conditioned numeric profile distilled from the retrieved historical slide deck."
     planning_preferences = sanitize_section_preferences(raw_profile)
+    font_preferences = sanitize_font_preferences(raw_profile)
     deterministic_color_preferences = deterministic_color_preferences or {}
     color_preferences: dict[str, Any] = {}
     for key in (
@@ -513,7 +690,7 @@ def sanitize_numeric_only_profile(
 
     return {
         "author_id": author_id,
-        "profile_version": 6,
+        "profile_version": 7,
         "profile_method": "retrieval_conditioned_numeric_only_pilot",
         "distilled_from": {
             "paper_count": len(selected_papers),
@@ -521,11 +698,12 @@ def sanitize_numeric_only_profile(
             "deck_sample_policy": {
                 "max_papers": max_retrieved,
                 "slides_per_deck": "full_retrieved_deck",
-                "selection_strategy": "title_similarity_then_recency_fallback",
+                "selection_strategy": selection_strategy,
             },
         },
         "planning_preferences": planning_preferences,
         "numeric_preferences": numeric_preferences,
+        "font_preferences": font_preferences,
         "color_preferences": color_preferences,
         "evidence_summary": {
             "notes": notes,
@@ -802,7 +980,7 @@ def build_author_metadata(
         "deck_sample_policy": {
             "max_papers": max_papers,
             "slides_per_deck": "representative",
-            "selection_strategy": "title_similarity_then_recency_fallback",
+            "selection_strategy": retrieval_matches[0].get("selection_strategy") if retrieval_matches else "title_similarity_then_recency_fallback",
         },
         "target_paper": target_metadata,
         "retrieval_matches": retrieval_matches,
@@ -819,6 +997,7 @@ def compact_retrieval_matches(ranked_candidates: list[dict[str, Any]], limit: in
                 "paper_pdf_path": candidate["paper_pdf_path"],
                 "slide_image_count": candidate["slide_image_count"],
                 "similarity": candidate["similarity"],
+                "llm_similarity": candidate.get("llm_similarity"),
             }
         )
     return compact
@@ -836,6 +1015,12 @@ def main() -> None:
     parser.add_argument("--prompt-path", type=Path, default=DEFAULT_PROMPT_PATH)
     parser.add_argument("--max-retrieved", type=int, default=1)
     parser.add_argument("--model", default="gpt-5.4-nano")
+    parser.add_argument(
+        "--retrieval-ranker",
+        choices=["title_similarity", "llm_title_abstract"],
+        default="llm_title_abstract",
+        help="How to rank candidate historical papers before selecting retrieved decks.",
+    )
     parser.add_argument("--force-refresh", action="store_true")
     parser.add_argument("--dry-run-metadata-only", action="store_true")
     args = parser.parse_args()
@@ -878,11 +1063,33 @@ def main() -> None:
         raise SystemExit(f"No eligible historical papers found for author_id={args.author_id}")
 
     ranked = rank_candidates(target_row["paper_title"], candidates)
-    selected_papers, selection_strategy = select_retrieved_papers(
-        ranked,
-        max_retrieved=args.max_retrieved,
-    )
+    selection_strategy = "title_similarity_then_recency_fallback"
+    if args.retrieval_ranker == "llm_title_abstract":
+        try:
+            ranked = rank_candidates_with_llm(
+                target_metadata=target_row,
+                ranked_candidates=ranked,
+                model_name=args.model,
+            )
+            selected_papers = ranked[: args.max_retrieved]
+            selection_strategy = "llm_title_abstract_rerank"
+        except Exception as exc:
+            print(
+                f"[retrieval-profile] LLM rerank failed ({type(exc).__name__}: {exc}). Falling back to title similarity.",
+                flush=True,
+            )
+            selected_papers, selection_strategy = select_retrieved_papers(
+                ranked,
+                max_retrieved=args.max_retrieved,
+            )
+    else:
+        selected_papers, selection_strategy = select_retrieved_papers(
+            ranked,
+            max_retrieved=args.max_retrieved,
+        )
     retrieval_matches = compact_retrieval_matches(ranked, limit=min(5, len(ranked)))
+    for match in retrieval_matches:
+        match["selection_strategy"] = selection_strategy
     deck_evidence = build_full_deck_image_evidence(selected_papers)
     deterministic_slide_count_summary = build_deterministic_slide_count_summary(selected_papers)
     ocr_text_density_summary = build_ocr_text_density_summary(selected_papers)

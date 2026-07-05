@@ -782,6 +782,7 @@ def build_profile_trace(author_preference_profile: Dict[str, Any] | None) -> Dic
         "distilled_from": author_preference_profile.get("distilled_from"),
         "planning_preferences": author_preference_profile.get("planning_preferences"),
         "numeric_preferences": author_preference_profile.get("numeric_preferences"),
+        "font_preferences": author_preference_profile.get("font_preferences"),
         "color_preferences": author_preference_profile.get("color_preferences"),
     }
 

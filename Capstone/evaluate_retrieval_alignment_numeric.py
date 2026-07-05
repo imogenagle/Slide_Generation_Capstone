@@ -12,11 +12,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
 
 from lxml import etree
+from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.shapes import PP_PLACEHOLDER_TYPE as PH_TYPE
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +97,18 @@ def build_color_target_summary(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_font_target_summary(profile: dict[str, Any]) -> dict[str, Any]:
+    font_preferences = dict(profile.get("font_preferences") or {})
+    title_font_name = str(font_preferences.get("title_font_name") or "").strip()
+    body_font_name = str(font_preferences.get("body_font_name") or "").strip()
+    result: dict[str, Any] = {}
+    if title_font_name:
+        result["title_font_name"] = title_font_name
+    if body_font_name:
+        result["body_font_name"] = body_font_name
+    return result
+
+
 def _normalize_hex(value: str | None) -> str | None:
     raw = str(value or "").strip().upper()
     if not raw:
@@ -127,6 +143,32 @@ def _color_distance(a: str | None, b: str | None) -> float | None:
     return round(sum((float(x) - float(y)) ** 2 for x, y in zip(rgb_a, rgb_b)) ** 0.5, 4)
 
 
+def _normalize_font_name(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    lowered = lowered.replace("-", " ")
+    lowered = " ".join(lowered.split())
+    return lowered or None
+
+
+def _font_match_distance(observed: str | None, target: str | None) -> float | None:
+    observed_norm = _normalize_font_name(observed)
+    target_norm = _normalize_font_name(target)
+    if observed_norm is None or target_norm is None:
+        return None
+    if observed_norm == target_norm:
+        return 0.0
+    if observed_norm in target_norm or target_norm in observed_norm:
+        return 0.25
+    observed_tokens = set(observed_norm.split())
+    target_tokens = set(target_norm.split())
+    if observed_tokens & target_tokens:
+        return 0.5
+    return 1.0
+
+
 def infer_themed_pptx_path(plan_path: Path) -> Path | None:
     parent = plan_path.parent
     stem = plan_path.name
@@ -140,6 +182,45 @@ def infer_themed_pptx_path(plan_path: Path) -> Path | None:
         return matches[0]
     fallback = sorted(parent.glob(f"*_output_slides_{variant}.pptx"))
     return fallback[0] if fallback else None
+
+
+def extract_font_preferences_from_pptx(pptx_path: Path) -> dict[str, Any]:
+    if not pptx_path.exists():
+        return {}
+
+    prs = Presentation(str(pptx_path))
+    title_fonts: Counter[str] = Counter()
+    body_fonts: Counter[str] = Counter()
+
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            if shape.shape_type != MSO_SHAPE_TYPE.PLACEHOLDER or not getattr(shape, "is_placeholder", False):
+                placeholder_type = None
+            else:
+                placeholder_type = shape.placeholder_format.type
+
+            bucket = body_fonts
+            if placeholder_type in {PH_TYPE.TITLE, PH_TYPE.CENTER_TITLE}:
+                bucket = title_fonts
+
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    font_name = str(getattr(run.font, "name", "") or "").strip()
+                    if font_name:
+                        bucket[font_name] += len((run.text or "").strip()) or 1
+                if not paragraph.runs:
+                    para_font_name = str(getattr(paragraph.font, "name", "") or "").strip()
+                    if para_font_name:
+                        bucket[para_font_name] += len((paragraph.text or "").strip()) or 1
+
+    result: dict[str, Any] = {}
+    if title_fonts:
+        result["title_font_name"] = title_fonts.most_common(1)[0][0]
+    if body_fonts:
+        result["body_font_name"] = body_fonts.most_common(1)[0][0]
+    return result
 
 
 def extract_theme_color_from_pptx(pptx_path: Path, *, target_key: str = "dk2") -> str | None:
@@ -204,6 +285,61 @@ def build_color_comparison(
         "baseline_distance": baseline_distance,
         "personalized_distance": personalized_distance,
         "closer_to_palette_preferences": winner,
+        "baseline_themed_pptx": str(baseline_pptx) if baseline_pptx else None,
+        "personalized_themed_pptx": str(personalized_pptx) if personalized_pptx else None,
+    }
+
+
+def build_font_comparison(
+    *,
+    profile: dict[str, Any],
+    baseline_plan_path: Path,
+    personalized_plan_path: Path,
+) -> dict[str, Any] | None:
+    target_summary = build_font_target_summary(profile)
+    if not target_summary:
+        return None
+
+    baseline_pptx = infer_themed_pptx_path(baseline_plan_path)
+    personalized_pptx = infer_themed_pptx_path(personalized_plan_path)
+    baseline_fonts = extract_font_preferences_from_pptx(baseline_pptx) if baseline_pptx else {}
+    personalized_fonts = extract_font_preferences_from_pptx(personalized_pptx) if personalized_pptx else {}
+
+    baseline_title_distance = _font_match_distance(baseline_fonts.get("title_font_name"), target_summary.get("title_font_name"))
+    personalized_title_distance = _font_match_distance(personalized_fonts.get("title_font_name"), target_summary.get("title_font_name"))
+    baseline_body_distance = _font_match_distance(baseline_fonts.get("body_font_name"), target_summary.get("body_font_name"))
+    personalized_body_distance = _font_match_distance(personalized_fonts.get("body_font_name"), target_summary.get("body_font_name"))
+
+    baseline_total = sum(value for value in (baseline_title_distance, baseline_body_distance) if value is not None)
+    personalized_total = sum(value for value in (personalized_title_distance, personalized_body_distance) if value is not None)
+    baseline_available = any(value is not None for value in (baseline_title_distance, baseline_body_distance))
+    personalized_available = any(value is not None for value in (personalized_title_distance, personalized_body_distance))
+
+    if not baseline_available and not personalized_available:
+        winner = "tie"
+    elif not baseline_available:
+        winner = "personalized"
+    elif not personalized_available:
+        winner = "baseline"
+    elif abs(baseline_total - personalized_total) <= 1e-9:
+        winner = "tie"
+    elif personalized_total < baseline_total:
+        winner = "personalized"
+    else:
+        winner = "baseline"
+
+    return {
+        "target_title_font_name": target_summary.get("title_font_name"),
+        "target_body_font_name": target_summary.get("body_font_name"),
+        "baseline_title_font_name": baseline_fonts.get("title_font_name"),
+        "baseline_body_font_name": baseline_fonts.get("body_font_name"),
+        "personalized_title_font_name": personalized_fonts.get("title_font_name"),
+        "personalized_body_font_name": personalized_fonts.get("body_font_name"),
+        "baseline_title_distance": baseline_title_distance,
+        "personalized_title_distance": personalized_title_distance,
+        "baseline_body_distance": baseline_body_distance,
+        "personalized_body_distance": personalized_body_distance,
+        "closer_to_font_preferences": winner,
         "baseline_themed_pptx": str(baseline_pptx) if baseline_pptx else None,
         "personalized_themed_pptx": str(personalized_pptx) if personalized_pptx else None,
     }
@@ -322,6 +458,11 @@ def main() -> None:
         baseline_plan_path=args.baseline_plan,
         personalized_plan_path=args.personalized_plan,
     )
+    font_comparison = build_font_comparison(
+        profile=profile,
+        baseline_plan_path=args.baseline_plan,
+        personalized_plan_path=args.personalized_plan,
+    )
 
     report = {
         "inputs": {
@@ -351,10 +492,13 @@ def main() -> None:
         },
         "comparison": comparison["metrics"],
         "color_palette_eval": color_comparison,
+        "font_eval": font_comparison,
         "summary": comparison["aggregate"],
     }
     if color_comparison is not None:
         report["summary"]["color_palette_winner"] = color_comparison["closer_to_palette_preferences"]
+    if font_comparison is not None:
+        report["summary"]["font_winner"] = font_comparison["closer_to_font_preferences"]
 
     output_text = json.dumps(report, indent=2, ensure_ascii=False)
     if args.output:

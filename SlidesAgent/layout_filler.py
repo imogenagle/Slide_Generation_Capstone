@@ -230,6 +230,21 @@ def _set_paragraph_font_size(paragraph, size_pt: float) -> None:
         run.font.size = Pt(size_pt)
 
 
+def _set_paragraph_font_name(paragraph, font_name: str | None) -> None:
+    if not font_name:
+        return
+    paragraph.font.name = font_name
+    for run in paragraph.runs:
+        run.font.name = font_name
+
+
+def _apply_text_frame_font_name(text_frame, font_name: str | None) -> None:
+    if text_frame is None or not font_name:
+        return
+    for paragraph in text_frame.paragraphs:
+        _set_paragraph_font_name(paragraph, font_name)
+
+
 def _enable_shrink_to_fit(text_frame, max_size_pt: float | None = None) -> None:
     if text_frame is None:
         return
@@ -512,6 +527,7 @@ def _set_shape_text_with_fit(
     text: str,
     max_size_pt: float,
     min_size_pt: float = 12.0,
+    font_name: str | None = None,
     alignment=PP_ALIGN.LEFT,
     vertical_anchor=MSO_ANCHOR.TOP,
 ) -> None:
@@ -520,12 +536,14 @@ def _set_shape_text_with_fit(
     tf = shape.text_frame
     tf.clear()
     tf.paragraphs[0].text = text or ""
+    _apply_text_frame_font_name(tf, font_name)
     _compact_text_frame(tf)
     _enable_shrink_to_fit(tf, max_size_pt=max_size_pt)
     _shrink_text_frame_to_fit(shape, tf, min_size_pt=min_size_pt)
     tf.vertical_anchor = vertical_anchor
     for paragraph in tf.paragraphs:
         paragraph.alignment = alignment
+        _set_paragraph_font_name(paragraph, font_name)
 
 
 def _contents_font_size(section_count: int) -> int:
@@ -791,6 +809,10 @@ def insert_visuals_auto(slide, visuals: list[Path]):
         if shape.shape_type == MSO_SHAPE_TYPE.PLACEHOLDER and
            "Picture" in shape.name
     ]
+
+    # Fill picture slots in a deterministic reading order so stacked formula
+    # templates place assets into the intended non-overlapping boxes.
+    picture_placeholders.sort(key=lambda shape: (shape.top, shape.left, shape.height, shape.width))
 
     if len(visuals) > len(picture_placeholders):
         print(f"Warning: not enough picture placeholders on slide (needed {len(visuals)}, found {len(picture_placeholders)})")
@@ -1404,6 +1426,7 @@ def _fill_bullets(
     bullets,
     lvl0_size=24,
     lvl1_size=24,
+    font_name: str | None = None,
     min_size_pt: float = 10.0,
     max_size_pt: float | None = None,
     target_min_fill: float = 0.46,
@@ -1424,12 +1447,14 @@ def _fill_bullets(
         p.text = (b.get("text") or "").strip()
         p.level = 0
         _set_paragraph_font_size(p, lvl0_size)
+        _set_paragraph_font_name(p, font_name)
         
         for s in (b.get("sub") or []):
             sp = tf.add_paragraph()
             sp.text = str(s).strip()
             sp.level = 1
             _set_paragraph_font_size(sp, lvl1_size)
+            _set_paragraph_font_name(sp, font_name)
     _enable_shrink_to_fit(tf)
     if shape is not None:
         _shrink_text_frame_to_fit(shape, tf, min_size_pt=min_size_pt)
@@ -1477,7 +1502,7 @@ def _ph_by_idx(slide, idx:int):
             return ph
     return None
 
-def fill_T19_2Text(slide, slide_info, section_no_text):
+def fill_T19_2Text(slide, slide_info, section_no_text, *, title_font_name: str | None = None, body_font_name: str | None = None):
      
     print("slide_info:")
     print(slide_info)
@@ -1527,25 +1552,25 @@ def fill_T19_2Text(slide, slide_info, section_no_text):
     right = cols[1] if len(cols) > 1 else {}
  
     if part_ph is not None and getattr(part_ph, "has_text_frame", False):
-        _set_shape_text_with_fit(part_ph, f"{section_no_text}", max_size_pt=28)
+        _set_shape_text_with_fit(part_ph, f"{section_no_text}", max_size_pt=28, font_name=title_font_name)
 
     if title_bar is not None and getattr(title_bar, "has_text_frame", False):
         title_txt = _normalize_slide_heading(slide_info.get("section", "") or slide_info.get("title", ""))
-        _set_shape_text_with_fit(title_bar, title_txt, max_size_pt=_header_font_size(title_txt))
+        _set_shape_text_with_fit(title_bar, title_txt, max_size_pt=_header_font_size(title_txt), font_name=title_font_name)
 
     if lt is not None and getattr(lt, "has_text_frame", False):
         left_title = _normalize_slide_heading(left.get("subsection", "") or left.get("title", "") or "")
-        _set_shape_text_with_fit(lt, left_title, max_size_pt=22)
+        _set_shape_text_with_fit(lt, left_title, max_size_pt=22, font_name=title_font_name)
 
     if rt is not None and getattr(rt, "has_text_frame", False):
         right_title = _normalize_slide_heading(right.get("subsection", "") or right.get("title", "") or "")
-        _set_shape_text_with_fit(rt, right_title, max_size_pt=22)
+        _set_shape_text_with_fit(rt, right_title, max_size_pt=22, font_name=title_font_name)
 
     if lb is not None and getattr(lb, "has_text_frame", False):
-        _fill_bullets(lb, left.get("bullets"))
+        _fill_bullets(lb, left.get("bullets"), font_name=body_font_name)
 
     if rb is not None and getattr(rb, "has_text_frame", False):
-        _fill_bullets(rb, right.get("bullets"))
+        _fill_bullets(rb, right.get("bullets"), font_name=body_font_name)
 
      
     missing = []
@@ -1603,6 +1628,20 @@ def generate_pptx_from_plan(
       
     plan: Dict = json.loads(Path(plan_json).read_text(encoding="utf-8"))
 
+    title_font_name = None
+    body_font_name = None
+    profile_path_value = getattr(args, "author_profile_path", None)
+    if profile_path_value:
+        try:
+            profile_payload = json.loads(Path(profile_path_value).read_text(encoding="utf-8"))
+            font_preferences = dict(profile_payload.get("font_preferences") or {})
+            raw_title_font = str(font_preferences.get("title_font_name") or "").strip()
+            raw_body_font = str(font_preferences.get("body_font_name") or "").strip()
+            title_font_name = raw_title_font or None
+            body_font_name = raw_body_font or None
+        except Exception as exc:
+            print(f"[font] failed to read font_preferences from profile: {exc}")
+
 
     title    = outline_json["metadata"]["title"]
     subtitle = outline_json["metadata"]["author"]
@@ -1627,6 +1666,7 @@ def generate_pptx_from_plan(
         title,
         max_size_pt=34,
         min_size_pt=18,
+        font_name=title_font_name,
         alignment=PP_ALIGN.CENTER,
         vertical_anchor=MSO_ANCHOR.MIDDLE,
     )
@@ -1635,6 +1675,7 @@ def generate_pptx_from_plan(
         subtitle,
         max_size_pt=22,
         min_size_pt=14,
+        font_name=body_font_name,
         alignment=PP_ALIGN.CENTER,
         vertical_anchor=MSO_ANCHOR.MIDDLE,
     )
@@ -1658,6 +1699,7 @@ def generate_pptx_from_plan(
  
     contents_font_size = _contents_font_size(len(unique_sections))
     _populate_contents_frame(tf, unique_sections, contents_font_size)
+    _apply_text_frame_font_name(tf, body_font_name)
             
     # ---------- Body ----------
     current_section  = None
@@ -1676,6 +1718,7 @@ def generate_pptx_from_plan(
                 f"PART {section_counter:02d}",
                 max_size_pt=38,
                 min_size_pt=18,
+                font_name=title_font_name,
                 alignment=PP_ALIGN.CENTER,
                 vertical_anchor=MSO_ANCHOR.MIDDLE,
             )
@@ -1684,6 +1727,7 @@ def generate_pptx_from_plan(
                 _normalize_slide_heading(current_section),
                 max_size_pt=36,
                 min_size_pt=18,
+                font_name=title_font_name,
                 alignment=PP_ALIGN.CENTER,
                 vertical_anchor=MSO_ANCHOR.MIDDLE,
             )
@@ -1712,15 +1756,21 @@ def generate_pptx_from_plan(
                         print(f"  Left: {shape.left}, Top: {shape.top}, Width: {shape.width}, Height: {shape.height}")
                         print(f"  Text: '{shape.text_frame.text.strip()}'")
     
-            fill_T19_2Text(slide, slide_info, section_no_text=f"{section_counter:02d}")
+            fill_T19_2Text(
+                slide,
+                slide_info,
+                section_no_text=f"{section_counter:02d}",
+                title_font_name=title_font_name,
+                body_font_name=body_font_name,
+            )
             continue
 
         part_ph, title_ph, body_ph = find_text_placeholders(slide)
   
         subsection_name = slide_info.get("subsection") or slide_info.get("title") or slide_info.get("section") or ""
         display_subsection = _normalize_slide_heading(subsection_name)
-        _set_shape_text_with_fit(part_ph, f"{section_counter:02d}", max_size_pt=28)
-        _set_shape_text_with_fit(title_ph, display_subsection, max_size_pt=_header_font_size(display_subsection))
+        _set_shape_text_with_fit(part_ph, f"{section_counter:02d}", max_size_pt=28, font_name=title_font_name)
+        _set_shape_text_with_fit(title_ph, display_subsection, max_size_pt=_header_font_size(display_subsection), font_name=title_font_name)
   
    
         # bullets + sub-bullets
@@ -1738,10 +1788,12 @@ def generate_pptx_from_plan(
                 p = tf.paragraphs[0] if len(tf.paragraphs) == 1 and not tf.paragraphs[0].text else tf.add_paragraph()
                 p.text, p.level = bullet.get("text", ""), 0
                 _set_paragraph_font_size(p, lvl0_size)
+                _set_paragraph_font_name(p, body_font_name)
                 for sub in bullet.get("sub", []):
                     sp = tf.add_paragraph()
                     sp.text, sp.level = sub, 1
                     _set_paragraph_font_size(sp, lvl1_size)
+                    _set_paragraph_font_name(sp, body_font_name)
             _enable_shrink_to_fit(tf)
             _shrink_text_frame_to_fit(body_ph, tf, min_size_pt=10.0)
             has_visuals = bool(slide_info.get("images") or slide_info.get("tables") or slide_info.get("formulas"))

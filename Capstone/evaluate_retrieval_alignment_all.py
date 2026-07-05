@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from Capstone.evaluate_retrieval_alignment_numeric import (
     build_color_comparison,
+    build_font_comparison,
     build_metric_comparison,
     build_retrieval_target_summary,
 )
@@ -68,6 +69,11 @@ def compute_numeric_report(
         baseline_plan_path=baseline_plan_path,
         personalized_plan_path=personalized_plan_path,
     )
+    font_comparison = build_font_comparison(
+        profile=profile,
+        baseline_plan_path=baseline_plan_path,
+        personalized_plan_path=personalized_plan_path,
+    )
 
     report = {
         "target_summary": target_summary,
@@ -91,10 +97,13 @@ def compute_numeric_report(
         },
         "comparison": comparison["metrics"],
         "color_palette_eval": color_comparison,
+        "font_eval": font_comparison,
         "summary": comparison["aggregate"],
     }
     if color_comparison is not None:
         report["summary"]["color_palette_winner"] = color_comparison["closer_to_palette_preferences"]
+    if font_comparison is not None:
+        report["summary"]["font_winner"] = font_comparison["closer_to_font_preferences"]
     return report
 
 
@@ -229,6 +238,7 @@ def main() -> None:
             "numeric_metric_losses": numeric_report["summary"]["baseline_metric_wins"],
             "numeric_ties": numeric_report["summary"]["tied_metrics"],
             "color_palette_winner": numeric_report["summary"].get("color_palette_winner"),
+            "font_winner": numeric_report["summary"].get("font_winner"),
         },
     }
 

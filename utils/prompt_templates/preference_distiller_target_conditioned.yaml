@@ -15,6 +15,10 @@ system_prompt: |
   - number of slides containing tables
   - number of slides containing formulas
 
+  Also produce a small standardized font preference estimate:
+  - estimated title font name
+  - estimated body font name
+
   Also produce a small standardized section-structure preference:
   - typical number of major sections in the deck
   - preferred section labels chosen only from a controlled vocabulary
@@ -78,6 +82,8 @@ template: |
     - analysis
     - limitations
     - conclusion
+  - Also estimate the most likely title font and the most likely body font from the retrieved slide images.
+  - Exact font recognition from rasterized slides is imperfect; still provide your single best estimate rather than a list of candidates.
   - Then set the standardized target values from those observed deck-level counts, favoring the closest retrieved deck when there is a strong title match.
   - Do not refuse to provide counts just because the target paper slides are unseen; the retrieved historical deck is the evidence source.
   - If a target truly cannot be counted from the retrieved slide deck images, return null.
@@ -108,11 +114,14 @@ template: |
     - canonical: mostly follows a standard intro/method/results/conclusion flow
     - custom: clearly uses a distinctive nonstandard structure
     - mixed: some standard structure but with meaningful deviations
+  - title_font_name and body_font_name should each be a single concise font estimate such as "Arial", "Calibri", "Aptos", "Helvetica", "Times New Roman", or similar.
+  - If the retrieved deck appears to use the same font family for titles and body, it is fine for both fields to be the same.
+  - If the font truly cannot be estimated, return null for that field.
 
   Return exactly this JSON shape:
   {
     "author_id": "{{ author_metadata.author_id }}",
-    "profile_version": 5,
+    "profile_version": 7,
     "distilled_from": {
       "paper_count": {{ author_metadata.paper_count }},
       "paper_ids": {{ author_metadata.paper_ids | tojson }},
@@ -132,6 +141,10 @@ template: |
       "target_image_slide_count": null,
       "target_table_slide_count": null,
       "target_formula_slide_count": null
+    },
+    "font_preferences": {
+      "title_font_name": null,
+      "body_font_name": null
     },
     "evidence_summary": {
       "notes": "1-3 sentence summary grounded in the evidence"
