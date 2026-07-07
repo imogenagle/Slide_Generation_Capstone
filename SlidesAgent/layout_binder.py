@@ -67,8 +67,8 @@ BIND_SYSTEM_PROMPT = """You are a layout binder. SlideGen has produced a deck pl
 
 You will be given:
   1. SlideGen's plan slides (each has section, subsection, template_id hint, bullet count, and counts for images / tables / formulas — tables and formulas are rendered as images on the slide, so a slide may carry multiple visuals).
-  2. Per-slide deck metadata (cover title, contents/agenda, section dividers, thanks slide).
-  3. A JSON list describing each slide of the user template (slide_type, image_regions, is_meta).
+  2. Deck-level metadata: the deck title and the subtitle (author string), used only to fill the cover slide. There is NO per-slide metadata for contents / section dividers / thanks — choose those indices purely from the user-template descriptions in (3).
+  3. A JSON list describing each slide of the user template (slide_type, image_regions, is_meta, and `has_picture_placeholder` — a programmatically-verified flag for whether the slide has a real picture placeholder a figure can be dropped into).
 
 SlideGen's `template_id` hints encode the structural need:
   - T1_TextOnly                       -> bullets only, no visuals
@@ -86,10 +86,11 @@ Rules:
   - For section dividers, prefer "section_divider"; fall back to "title". Return null ONLY if the template has nothing close.
   - For thanks, prefer "thanks"; fall back to "title". Return null ONLY if the template has nothing close.
   - For body slides:
-      - If the SlideGen slide has any visuals (n_images + n_tables + n_formulas > 0) -> prefer "image_focus", "two_column", or "comparison".
+      - HARD REQUIREMENT: if the SlideGen slide has any visuals (n_images + n_tables + n_formulas > 0), you MUST pick a user-template slide whose `has_picture_placeholder` is true. A figure dropped onto a slide with no picture placeholder lands on top of the bullet text. Only ignore this if NO non-meta template slide has `has_picture_placeholder` true.
+      - Among `has_picture_placeholder` slides, prefer slide_type "image_focus", "two_column", or "comparison".
       - If it has multiple visuals (>= 2) -> strongly prefer "image_focus" or "comparison" (more room).
-      - If it's text-only -> prefer "content_bullets" or "two_column".
-      - For data_table content (n_tables > 0 and n_bullets is low) -> prefer "data_table" if available, else "image_focus".
+      - If it's text-only (total_visuals == 0) -> prefer "content_bullets" or "two_column"; `has_picture_placeholder` does not matter.
+      - For data_table content (n_tables > 0 and n_bullets is low) -> prefer "data_table" if available, else an "image_focus" slide with a picture placeholder.
       - Match figure-position hint (right/left/top) to image_regions when possible.
   - It is OK to reuse the same user-template slide for many body slides (multiple bullet-style slides can all clone the same content_bullets layout).
   - Pick the SAME section_divider layout for every section transition.
@@ -219,6 +220,24 @@ def describe_template_slides(image_paths: list[Path]) -> list[dict[str, Any]]:
     return descriptions
 
 
+def scan_picture_placeholders(template_path: Path) -> dict[int, int]:
+    """Return {slide_index: count of PICTURE placeholders} for the template.
+
+    Programmatic ground truth — far more reliable than the vision LLM's
+    slide_type guess for deciding which slides can host a figure.
+    PP_PLACEHOLDER.PICTURE == 18.
+    """
+    prs = Presentation(str(template_path))
+    counts: dict[int, int] = {}
+    for i, slide in enumerate(prs.slides):
+        n = 0
+        for ph in slide.placeholders:
+            if ph.placeholder_format.type == 18:
+                n += 1
+        counts[i] = n
+    return counts
+
+
 # ---------- Stage 3: bind SlideGen plan slides to user-template slides ---------- #
 
 
@@ -293,6 +312,34 @@ def bind_user_template_to_plan(
             assignments = assignments[:n_plan_slides]
         binding["body_assignments"] = assignments
 
+    # Enforce the picture-placeholder rule the prompt asks for: any plan slide
+    # with visuals MUST land on a template slide that has a picture placeholder,
+    # otherwise the figure renders on top of the bullet text. We don't trust the
+    # LLM to honor this — verify against the programmatic flag and repair.
+    pic_slides = [d["slide_index"] for d in template_descriptions
+                  if d.get("has_picture_placeholder") and not d.get("is_meta")]
+    if pic_slides:
+        plan_slides = slidegen_plan.get("slides", [])
+        repaired = 0
+        for i, plan_slide in enumerate(plan_slides):
+            n_visuals = (len(plan_slide.get("images") or [])
+                         + len(plan_slide.get("tables") or [])
+                         + len(plan_slide.get("formulas") or []))
+            if n_visuals == 0:
+                continue
+            if assignments[i] not in pic_slides:
+                # Reassign to a picture-placeholder slide. Prefer one the binder
+                # already chose for another figure slide (visual consistency).
+                already = next((a for a in assignments if a in pic_slides), None)
+                assignments[i] = already if already is not None else pic_slides[0]
+                repaired += 1
+        if repaired:
+            print(f"[layout_binder]   repaired {repaired} figure slide(s) "
+                  f"onto picture-placeholder layouts")
+    else:
+        print("[layout_binder]   WARN: template has no picture-placeholder "
+              "slides; figures will use beside-text fallback placement")
+
     return binding
 
 
@@ -329,6 +376,52 @@ def _delete_slides_at(prs, indices: list[int]) -> None:
     sldId_elems = list(sldIdLst)
     for i in sorted(indices, reverse=True):
         sldIdLst.remove(sldId_elems[i])
+
+
+# Substrings (lowercased) that mark a shape as leftover template sample content.
+_SAMPLE_TEXT_MARKERS = (
+    "bullet level", "lorem ipsum", "helvetica", "additional content here",
+    "delete this slide", "image caption", "caption text here", "caption or",
+    "description text here", "presentation title here", "divider slide text",
+    "slide title", "firstname lastname", "cnet@uchicago", "url.uchicago",
+    "head level", "text box ma", "text level", "click here", "placeholder text",
+)
+
+
+def _collect_shape_text(shape) -> str:
+    """Gather all text from a shape, recursing into groups. Lowercased."""
+    parts: list[str] = []
+    if shape.has_text_frame and shape.text_frame.text.strip():
+        parts.append(shape.text_frame.text)
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        for child in shape.shapes:
+            parts.append(_collect_shape_text(child))
+    return " ".join(parts).lower()
+
+
+def _strip_sample_shapes(slide) -> int:
+    """Remove leftover template sample content from a cloned slide.
+
+    Targets non-placeholder shapes only (placeholders are handled by
+    _fill_slide_text). Removes sample charts and tables outright, and any
+    shape whose text matches a known sample marker (e.g. callout groups with
+    'Bullet level 1' / 'Helvetica Bold 24pt'). Brand decoration with no
+    sample text is left intact. Returns the number stripped.
+    """
+    to_remove = []
+    for shape in slide.shapes:
+        # Sample charts / tables — template examples, never real content here.
+        if getattr(shape, "has_chart", False) or getattr(shape, "has_table", False):
+            to_remove.append(shape)
+            continue
+        if shape.is_placeholder:
+            continue  # _fill_slide_text owns placeholders
+        text = _collect_shape_text(shape)
+        if text and any(marker in text for marker in _SAMPLE_TEXT_MARKERS):
+            to_remove.append(shape)
+    for shape in to_remove:
+        shape._element.getparent().remove(shape._element)
+    return len(to_remove)
 
 
 def _enable_shrink_to_fit(tf) -> None:
@@ -502,37 +595,6 @@ def _fill_slide_text(slide, content: dict) -> None:
             _clear_text_frame(ph.text_frame)
 
 
-# Figure placement boxes — fractions of slide dimensions.
-_REGION_BOXES: dict[tuple[str, str], tuple[float, float, float, float]] = {
-    ("top", "small"):    (0.375, 0.05, 0.25, 0.30),
-    ("top", "medium"):   (0.30,  0.05, 0.40, 0.40),
-    ("top", "large"):    (0.20,  0.05, 0.60, 0.50),
-    ("bottom", "small"): (0.375, 0.55, 0.25, 0.40),
-    ("bottom", "medium"):(0.30,  0.42, 0.40, 0.55),
-    ("bottom", "large"): (0.10,  0.35, 0.80, 0.60),
-    ("center", "small"): (0.375, 0.30, 0.25, 0.40),
-    ("center", "medium"):(0.30,  0.22, 0.40, 0.55),
-    ("center", "large"): (0.20,  0.18, 0.60, 0.65),
-    ("left", "small"):   (0.05,  0.30, 0.30, 0.40),
-    ("left", "medium"):  (0.05,  0.22, 0.40, 0.55),
-    ("left", "large"):   (0.05,  0.20, 0.45, 0.70),
-    ("right", "small"):  (0.65,  0.30, 0.30, 0.40),
-    ("right", "medium"): (0.55,  0.22, 0.40, 0.55),
-    ("right", "large"):  (0.50,  0.20, 0.45, 0.70),
-}
-_FALLBACK_BOX = (0.55, 0.22, 0.40, 0.68)
-
-
-def _resolve_figure_box(region_hint: Optional[dict]) -> tuple[float, float, float, float]:
-    if not region_hint:
-        return _FALLBACK_BOX
-    pos = str(region_hint.get("approx_position", "")).strip().lower()
-    size = str(region_hint.get("size", "medium")).strip().lower()
-    if size not in {"small", "medium", "large"}:
-        size = "medium"
-    return _REGION_BOXES.get((pos, size), _FALLBACK_BOX)
-
-
 def _fit_image_in_box(slide, image_path: Path, box_left: int, box_top: int,
                       box_w: int, box_h: int) -> None:
     """Place an image into a box, aspect-preserved, centered."""
@@ -599,14 +661,12 @@ def _strip_pictures_in_region(slide, box_left: int, box_top: int,
     return len(to_remove)
 
 
-def _insert_visuals(slide, prs, visual_paths: list[Path],
-                    region_hint: Optional[dict] = None) -> int:
+def _insert_visuals(slide, prs, visual_paths: list[Path]) -> int:
     """Place one or more visuals (image / table / formula PNGs) on the slide.
 
-    Single visual: aspect-fit into the image region.
-    Multiple visuals: vertical stack within the same region — each gets an
-    equal-height row, the visual is aspect-fit centered inside its row.
-    Returns the count actually placed.
+    Anchors to the template's picture placeholder when present; otherwise
+    carves a right-hand column beside the text. Single visual fills the box;
+    multiple visuals are stacked in equal-height rows. Returns the count placed.
     """
     if not visual_paths:
         return 0
@@ -625,16 +685,26 @@ def _insert_visuals(slide, prs, visual_paths: list[Path],
             print(f"[layout_binder]   stripped {stripped} extra picture(s) near anchor")
         print(f"[layout_binder]   anchored to template picture spot")
     else:
+        # No picture spot on this layout. Carve a right-hand column for the
+        # figure and shrink the body/object text placeholders to the left half,
+        # so the figure sits BESIDE the bullets at a usable size rather than
+        # on top of them. (The binder should rarely land here — figure slides
+        # are repaired onto picture-placeholder layouts upstream.)
         slide_w = prs.slide_width
         slide_h = prs.slide_height
-        box_l, box_t, box_w_frac, box_h_frac = _resolve_figure_box(region_hint)
-        box_left = int(slide_w * box_l)
-        box_top = int(slide_h * box_t)
-        box_w = int(slide_w * box_w_frac)
-        box_h = int(slide_h * box_h_frac)
+        text_limit = int(slide_w * 0.50)
+        for ph in slide.placeholders:
+            if ph.placeholder_format.type in (2, 7) and ph.has_text_frame:
+                if (ph.left or 0) + (ph.width or 0) > text_limit:
+                    ph.width = max(text_limit - (ph.left or 0), int(slide_w * 0.30))
+        box_left = int(slide_w * 0.54)
+        box_top = int(slide_h * 0.24)
+        box_w = int(slide_w * 0.44)
+        box_h = int(slide_h * 0.68)
         stripped = _strip_pictures_in_region(slide, box_left, box_top, box_w, box_h)
         if stripped:
             print(f"[layout_binder]   stripped {stripped} sample picture(s) from fallback region")
+        print("[layout_binder]   no picture anchor; placed figure beside text")
 
     n = len(visual_paths)
     gap = max(int(box_h * 0.02), 0) if n > 1 else 0
@@ -684,7 +754,7 @@ def _build_render_sequence(
 ) -> list[dict]:
     """Build the full list of slides to render (cover, contents, dividers, body, thanks).
 
-    Each entry: {kind, template_slide_index, content: {title, subtitle, bullets}, figure?, region_hint?}
+    Each entry: {kind, template_slide_index, content: {title, subtitle, bullets}, slidegen_slide?}
 
     If the binder LLM returned null for contents/section_divider/thanks, fall
     back to scanning `template_descriptions` for a usable slide_type.
@@ -792,13 +862,14 @@ def _build_render_sequence(
 # ---------- Top-level entry point ---------- #
 
 
-def _load_slidegen_artifacts(args) -> tuple[dict, dict, dict]:
-    """Load SlideGen's plan / raw content / figures from the contents directory."""
+def _load_slidegen_artifacts(args) -> tuple[dict, dict, dict, dict]:
+    """Load SlideGen's plan / raw content / figures / formulas from contents."""
     variant_suffix = "_personalized" if getattr(args, "use_author_preferences", False) else "_baseline"
     contents_dir = REPO_ROOT / "contents" / args.paper_name
     plan_path = contents_dir / f"<{args.model_name_t}_{args.model_name_v}>_slide_plan{variant_suffix}.json"
     raw_path = contents_dir / f"<{args.model_name_t}_{args.model_name_v}>_raw_content.json"
     figs_path = contents_dir / f"<{args.model_name_t}_{args.model_name_v}>_figures.json"
+    formulas_path = contents_dir / f"<{args.model_name_t}_{args.model_name_v}>_formula_match.json"
 
     if not plan_path.exists():
         raise FileNotFoundError(f"SlideGen plan not found: {plan_path}")
@@ -812,7 +883,57 @@ def _load_slidegen_artifacts(args) -> tuple[dict, dict, dict]:
     if figs_path.exists():
         figures = json.loads(figs_path.read_text(encoding="utf-8"))
 
-    return plan, raw, figures
+    formulas = {}
+    if formulas_path.exists():
+        formulas = json.loads(formulas_path.read_text(encoding="utf-8"))
+
+    return plan, raw, figures, formulas
+
+
+def _append_body_notes(
+    slide,
+    slidegen_slide: dict,
+    outline_json: dict,
+    figs_data: dict,
+    formula_data: dict,
+    *,
+    get_content,
+    get_image_reasons,
+    get_table_reasons,
+    get_formula_reasons,
+) -> bool:
+    """Add the same body-slide notes used by layout_filler.generate_pptx_from_plan."""
+    notes_chunks: list[str] = []
+    section = slidegen_slide.get("section", "")
+    subsection = slidegen_slide.get("subsection", "")
+
+    txt = get_content(section, subsection, outline_json)
+    if txt:
+        notes_chunks.append(txt)
+
+    if slidegen_slide.get("images"):
+        img_r = get_image_reasons(section, subsection, slidegen_slide["images"], figs_data)
+        if img_r:
+            notes_chunks.append(img_r)
+
+    if slidegen_slide.get("tables"):
+        tb_r = get_table_reasons(section, subsection, slidegen_slide["tables"], figs_data)
+        if tb_r:
+            notes_chunks.append(tb_r)
+
+    if slidegen_slide.get("formulas"):
+        fm_r = get_formula_reasons(section, subsection, slidegen_slide["formulas"], formula_data)
+        if fm_r:
+            notes_chunks.append(fm_r)
+
+    if not notes_chunks:
+        return False
+
+    nframe = slide.notes_slide.notes_text_frame
+    if nframe.text and not nframe.text.endswith("\n"):
+        nframe.text += "\n"
+    nframe.text += "\n\n".join(notes_chunks)
+    return True
 
 
 def _slugify_template_label(template_path: Path) -> str:
@@ -845,7 +966,7 @@ def bind_and_render(args, user_template_path: str, template_label: Optional[str]
         template_label = _slugify_template_label(template_path)
 
     try:
-        plan, raw_content, figures = _load_slidegen_artifacts(args)
+        plan, raw_content, figures, formulas = _load_slidegen_artifacts(args)
     except FileNotFoundError as e:
         print(f"[layout_binder] ERROR: {e}")
         return None
@@ -882,6 +1003,16 @@ def bind_and_render(args, user_template_path: str, template_label: Optional[str]
             descriptions_cache.parent.mkdir(parents=True, exist_ok=True)
             descriptions_cache.write_text(json.dumps(descriptions, indent=2), encoding="utf-8")
 
+        # Merge in programmatic picture-placeholder ground truth (always — the
+        # cached descriptions.json may predate this field).
+        pic_counts = scan_picture_placeholders(template_path)
+        for d in descriptions:
+            n = pic_counts.get(d.get("slide_index"), 0)
+            d["has_picture_placeholder"] = n > 0
+            d["n_picture_placeholders"] = n
+        n_pic = sum(1 for d in descriptions if d.get("has_picture_placeholder"))
+        print(f"[layout_binder]   {n_pic}/{len(descriptions)} template slides have a picture placeholder")
+
     with _stage(3, f"bind plan slides to template slides [{template_label}]"):
         binding = bind_user_template_to_plan(plan, descriptions, deck_meta)
         print(f"[layout_binder]   binding: cover={binding.get('cover_slide_index')}, "
@@ -895,21 +1026,32 @@ def bind_and_render(args, user_template_path: str, template_label: Optional[str]
 
     with _stage(4, "render output PPTX"):
         # Lazy import to avoid pulling apply_color / heavy filler deps at module load.
-        from SlidesAgent.layout_filler import resolve_visual_paths
+        from SlidesAgent.layout_filler import (
+            get_content,
+            get_formula_reasons,
+            get_image_reasons,
+            get_table_reasons,
+            resolve_visual_paths,
+        )
 
         seq = _build_render_sequence(plan, binding, deck_meta, template_descriptions=descriptions)
         prs = Presentation(str(template_path))
         n_template_slides = len(prs.slides)
-        descs_by_idx = {d["slide_index"]: d for d in descriptions}
 
         rendered = 0
         visuals_inserted = 0
+        notes_inserted = 0
         for entry in seq:
             src = entry["template_slide_index"]
             if src is None or not (0 <= src < n_template_slides):
                 print(f"[layout_binder]   WARN: skipping {entry['kind']} (bad template_slide_index={src})")
                 continue
             new_slide = _duplicate_slide(prs, src)
+            # Strip leftover template sample content (sample charts/tables,
+            # callout groups with "Bullet level 1" etc.) before filling.
+            stripped = _strip_sample_shapes(new_slide)
+            if stripped:
+                print(f"[layout_binder]   stripped {stripped} sample shape(s) from {entry['kind']}")
             try:
                 _fill_slide_text(new_slide, entry["content"])
             except Exception as e:
@@ -919,14 +1061,27 @@ def bind_and_render(args, user_template_path: str, template_label: Optional[str]
             slidegen_slide = entry.get("slidegen_slide")
             if slidegen_slide:
                 try:
+                    if _append_body_notes(
+                        new_slide,
+                        slidegen_slide,
+                        raw_content,
+                        figures,
+                        formulas,
+                        get_content=get_content,
+                        get_image_reasons=get_image_reasons,
+                        get_table_reasons=get_table_reasons,
+                        get_formula_reasons=get_formula_reasons,
+                    ):
+                        notes_inserted += 1
+                except Exception as e:
+                    print(f"[layout_binder]   WARN: speaker-note fill failed on {entry['kind']}: {e}")
+                try:
                     visual_paths = resolve_visual_paths(slidegen_slide, args)
                 except Exception as e:
                     print(f"[layout_binder]   WARN: visual resolution failed on {entry['kind']}: {e}")
                     visual_paths = []
                 if visual_paths:
-                    regions = (descs_by_idx.get(src) or {}).get("image_regions") or []
-                    region_hint = regions[0] if regions else None
-                    placed = _insert_visuals(new_slide, prs, visual_paths, region_hint)
+                    placed = _insert_visuals(new_slide, prs, visual_paths)
                     visuals_inserted += placed
             rendered += 1
 
@@ -936,6 +1091,9 @@ def bind_and_render(args, user_template_path: str, template_label: Optional[str]
         output_pptx = contents_dir / f"{args.model_name_t}_{args.model_name_v}_output_slides{variant_suffix}_user_template__{template_label}.pptx"
         output_pptx.parent.mkdir(parents=True, exist_ok=True)
         prs.save(str(output_pptx))
-        print(f"[layout_binder]   rendered {rendered} slides ({visuals_inserted} visuals placed) -> {output_pptx}")
+        print(
+            f"[layout_binder]   rendered {rendered} slides "
+            f"({visuals_inserted} visuals placed, {notes_inserted} notes added) -> {output_pptx}"
+        )
 
     return output_pptx
