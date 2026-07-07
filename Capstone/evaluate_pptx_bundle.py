@@ -88,8 +88,8 @@ def main() -> None:
     parser.add_argument("--template-pptx", type=Path, default=None, help="Optional template PPTX for template similarity.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Optional per-deck output directory.")
     parser.add_argument("--render-dpi", type=int, default=120)
-    parser.add_argument("--core-coverage-model", default="4o-mini")
-    parser.add_argument("--judge-model", default="gpt-5")
+    parser.add_argument("--core-coverage-model", default="gpt-5.4-nano")
+    parser.add_argument("--judge-model", default="gpt-5.4-nano")
     parser.add_argument("--request-timeout", type=float, default=180.0)
     parser.add_argument("--max-original-slides", type=int, default=MAX_IMAGES_PER_REQUEST)
     parser.add_argument("--skip-core-coverage", action="store_true")
@@ -161,10 +161,13 @@ def main() -> None:
                 max_original_slides=args.max_original_slides,
             )
             write_json(output_dir / "core_coverage.json", result)
-            summary["metrics"]["core_coverage"] = {
-                "topic_iou": result.get("topic_iou"),
-                "path": "core_coverage.json",
-            }
+            if result.get("skipped"):
+                summary["skipped"]["core_coverage"] = str(result.get("notes") or result.get("skip_reason") or "Skipped.")
+            else:
+                summary["metrics"]["core_coverage"] = {
+                    "topic_iou": result.get("topic_iou"),
+                    "path": "core_coverage.json",
+                }
         else:
             summary["skipped"]["core_coverage"] = "Missing paper_id or original_slide_dir."
 

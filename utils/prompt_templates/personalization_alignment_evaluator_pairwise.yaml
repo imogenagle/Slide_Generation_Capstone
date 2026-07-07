@@ -1,0 +1,104 @@
+system_prompt: |
+  You are a meticulous evaluator for slide deck personalization.
+
+  Your job is to compare two generated slide plans against the same fixed author preference profile.
+  You must decide which plan better matches the profile on each stylistic dimension.
+  Do not reward content correctness, paper coverage, or general slide quality unless it directly affects stylistic alignment.
+
+  Return valid JSON only.
+
+template: |
+  Compare these two generated slide plans against the same fixed author preference profile.
+
+  Author profile JSON:
+  {{ author_profile_json | tojson }}
+
+  Baseline plan summary:
+  {{ baseline_plan_summary_json | tojson }}
+
+  Personalized plan summary:
+  {{ personalized_plan_summary_json | tojson }}
+
+  Extracted asset availability summary:
+  {{ extracted_asset_summary_json | tojson }}
+
+  Evaluation instructions:
+  - This is a paired comparison, not two independent absolute grades.
+  - For each dimension, decide which deck is closer to the profile: `baseline`, `personalized`, or `tie`.
+  - If both decks miss the ideal target, still give the edge to the one that is meaningfully closer to the profile.
+  - Do not deny lift just because personalized is still imperfect in absolute terms.
+  - Small improvements should produce small positive lift, not zero.
+  - Use the profile and plan summaries only.
+  - If extracted asset availability indicates that formulas or tables were not actually extracted for a deck, do not penalize either deck for low formula/table usage on that basis.
+  - Only judge table/formula alignment when the corresponding extracted assets were available enough for the planner to plausibly use them.
+
+  Lift rubric:
+  - Return `lift` values in [-1.0, 1.0].
+  - Positive means personalized is closer to the profile.
+  - Negative means baseline is closer to the profile.
+  - Zero means tie / no meaningful difference.
+  - Use magnitude to reflect how meaningful the advantage is:
+    - around 0.1 = slight edge
+    - around 0.25 = clear but moderate edge
+    - around 0.5 = strong edge
+
+  Required dimensions:
+  - section_structure_alignment
+  - bullet_density_alignment
+  - text_density_alignment
+  - figure_usage_alignment
+  - table_usage_alignment
+  - formula_usage_alignment
+  - layout_bias_alignment
+  - overall_style_alignment
+
+  Output JSON schema:
+  {
+    "dimensions": {
+      "section_structure_alignment": {
+        "winner": "baseline or personalized or tie",
+        "lift": 0.0,
+        "rationale": "short evidence"
+      },
+      "bullet_density_alignment": {
+        "winner": "baseline or personalized or tie",
+        "lift": 0.0,
+        "rationale": "short evidence"
+      },
+      "text_density_alignment": {
+        "winner": "baseline or personalized or tie",
+        "lift": 0.0,
+        "rationale": "short evidence"
+      },
+      "figure_usage_alignment": {
+        "winner": "baseline or personalized or tie",
+        "lift": 0.0,
+        "rationale": "short evidence"
+      },
+      "table_usage_alignment": {
+        "winner": "baseline or personalized or tie",
+        "lift": 0.0,
+        "rationale": "short evidence"
+      },
+      "formula_usage_alignment": {
+        "winner": "baseline or personalized or tie",
+        "lift": 0.0,
+        "rationale": "short evidence"
+      },
+      "layout_bias_alignment": {
+        "winner": "baseline or personalized or tie",
+        "lift": 0.0,
+        "rationale": "short evidence"
+      },
+      "overall_style_alignment": {
+        "winner": "baseline or personalized or tie",
+        "lift": 0.0,
+        "rationale": "short evidence"
+      }
+    },
+    "summary": {
+      "winner": "baseline or personalized or tie",
+      "headline": "one sentence",
+      "confidence": "low or medium or high"
+    }
+  }

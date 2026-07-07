@@ -18,6 +18,14 @@ import time
 
 import pickle as pkl
 import argparse
+from SlidesAgent.output_paths import (
+    figures_json_path,
+    images_filtered_path,
+    images_json_path,
+    raw_content_path,
+    tables_filtered_path,
+    tables_json_path,
+)
 
 load_dotenv()
 
@@ -271,9 +279,9 @@ def validate_and_adjust_subsections(section_bbox, subsection_bboxes):
 
 
 def filter_image_table(args, filter_config):
-    images = json.load(open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}_images.json', 'r'))
-    tables = json.load(open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}_tables.json', 'r'))
-    doc_json = json.load(open(f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_raw_content.json', 'r'))
+    images = json.load(open(images_json_path(args), 'r'))
+    tables = json.load(open(tables_json_path(args), 'r'))
+    doc_json = json.load(open(raw_content_path(args), 'r'))
     agent_filter = 'image_table_filter_agent'
     with open(f"utils/prompt_templates/{agent_filter}.yaml", "r") as f:
         config_filter = yaml.safe_load(f)
@@ -355,10 +363,18 @@ def filter_image_table(args, filter_config):
             raw_text = response.msgs[0].content
     
     response_json = get_json_from_response(raw_text)
-    table_information = response_json['table_information']
-    image_information = response_json['image_information']
-    json.dump(images, open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/images_filtered.json', 'w'), indent=4)
-    json.dump(tables, open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/tables_filtered.json', 'w'), indent=4)
+    filtered_table_information = response_json.get('table_information', {})
+    filtered_image_information = response_json.get('image_information', {})
+    if not isinstance(filtered_table_information, dict):
+        filtered_table_information = {}
+    if not isinstance(filtered_image_information, dict):
+        filtered_image_information = {}
+    filtered_images_path = images_filtered_path(args)
+    filtered_tables_path = tables_filtered_path(args)
+    filtered_images_path.parent.mkdir(parents=True, exist_ok=True)
+    filtered_tables_path.parent.mkdir(parents=True, exist_ok=True)
+    json.dump(filtered_image_information, open(filtered_images_path, 'w'), indent=4)
+    json.dump(filtered_table_information, open(filtered_tables_path, 'w'), indent=4)
 
     return input_token, output_token
 
@@ -497,14 +513,14 @@ def dedupe_figure_arrangement(figure_arrangement):
 def gen_figure_match(args, actor_config, raw_result):
     total_input_token, total_output_token = 0, 0
     agent_name = 'figure_match'
-    doc_json = json.load(open(f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_raw_content.json', 'r'))
-    filtered_table_information = json.load(open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/tables_filtered.json', 'r'))
-    filtered_image_information = json.load(open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/images_filtered.json', 'r'))
+    doc_json = json.load(open(raw_content_path(args), 'r'))
+    filtered_table_information = json.load(open(tables_filtered_path(args), 'r'))
+    filtered_image_information = json.load(open(images_filtered_path(args), 'r'))
  
     filtered_image_information, fix_in, fix_out = fix_image_captions(
         args, raw_result, actor_config, filtered_image_information
     ) 
-    json.dump(filtered_image_information, open(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/images_filtered.json', 'w'), indent=4)
+    json.dump(filtered_image_information, open(images_filtered_path(args), 'w'), indent=4)
 
     total_input_token, total_output_token = fix_in, fix_out
 
@@ -512,8 +528,8 @@ def gen_figure_match(args, actor_config, raw_result):
     # Downstream planning can still generate text-only slides from the outline.
     if not filtered_image_information and not filtered_table_information:
         figure_arrangement = {}
-        figures_save_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_figures.json"
-        os.makedirs(os.path.dirname(figures_save_path), exist_ok=True)
+        figures_save_path = figures_json_path(args)
+        figures_save_path.parent.mkdir(parents=True, exist_ok=True)
         with open(figures_save_path, "w") as f:
             json.dump(figure_arrangement, f, indent=4)
         print("[figure-match] No filtered images or tables remained; saving empty figure arrangement.")
@@ -607,8 +623,8 @@ def gen_figure_match(args, actor_config, raw_result):
     print("time_taken:",time_taken)
     figure_arrangement = get_json_from_response(res_result)
     figure_arrangement = dedupe_figure_arrangement(figure_arrangement)
-    figures_save_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_figures.json" 
-    os.makedirs(os.path.dirname(figures_save_path), exist_ok=True)
+    figures_save_path = figures_json_path(args)
+    figures_save_path.parent.mkdir(parents=True, exist_ok=True)
     with open(figures_save_path, "w") as f:
         json.dump(figure_arrangement, f, indent=4)
     print(f'Figure arrangement: {json.dumps(figure_arrangement, indent=4)}')

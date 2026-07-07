@@ -63,3 +63,35 @@ if uploaded_file is not None:
             if feedback:
                 update_user_profile(user_id, feedback)
                 st.success("Preferences updated for your next session!")
+
+# --- Evaluation Results ---
+st.divider()
+st.subheader("Past Evaluation Results")
+
+import json
+from pathlib import Path
+
+bundle_root = Path("Capstone/evaluations/deck_bundles")
+
+if user_id:
+    summaries = list(bundle_root.rglob("summary.json"))
+    
+    if summaries:
+        rows = []
+        for s in summaries:
+            data = json.loads(s.read_text())
+            metrics = data.get("metrics", {})
+            rows.append({
+                "Paper": data.get("title", data.get("paper_id", s.parent.name)),
+                "ID": data.get("paper_id", ""),
+                "Type": "Personalized" if "personalized" in s.parent.name else "Baseline",
+                "Coverage IoU": metrics.get("core_coverage", {}).get("topic_iou"),
+                "GAD": metrics.get("geometry_aware_density", {}).get("gad_geom"),
+                "Aesthetic": metrics.get("slidetailor_aesthetic_quality", {}).get("deck_score"),
+                "Content": metrics.get("slidetailor_content_informativeness", {}).get("deck_score"),
+            })
+        st.dataframe(rows)
+    else:
+        st.info("No evaluation results found yet.")
+else:
+    st.info("Enter your user ID above to see evaluation results.")

@@ -115,10 +115,24 @@ def openai_chat_text(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_prompt})
 
-    cc = client.chat.completions.create(
-        model=model,
-        messages=messages,
-    )
+    chat_kwargs = {
+        "model": model,
+        "messages": messages,
+    }
+    temperature_env = os.getenv("SLIDEGEN_OPENAI_TEMPERATURE", "").strip()
+    top_p_env = os.getenv("SLIDEGEN_OPENAI_TOP_P", "").strip()
+    if temperature_env:
+        try:
+            chat_kwargs["temperature"] = float(temperature_env)
+        except ValueError:
+            pass
+    if top_p_env:
+        try:
+            chat_kwargs["top_p"] = float(top_p_env)
+        except ValueError:
+            pass
+
+    cc = client.chat.completions.create(**chat_kwargs)
 
     text = (cc.choices[0].message.content or "").strip()
     usage = getattr(cc, "usage", None)

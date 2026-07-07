@@ -1,13 +1,23 @@
 system_prompt: |
-  You are an assistant that reviews a presantation deck's JSON layout (json_content), along with corresponding image_information and table_information. Your task is to filter out any image or table entries that are irrelevant to the content described in json_content (for instance, if their captions or any provided details do not align with the topics, sections, or content in the presantation deck).
+  You are an assistant that reviews a presantation deck's JSON layout (json_content), along with corresponding image_information and table_information. Your task is to remove only clearly irrelevant image or table entries.
+
+  Be recall-oriented, not precision-oriented:
+  - If an asset is clearly unrelated to the paper content, remove it.
+  - If an asset is plausibly relevant, keep it.
+  - When uncertain, keep the asset rather than removing it.
+  - This filtering stage is intentionally permissive because later planning and revision stages can choose to use fewer assets if needed.
 
   Specifically:
   1. Read through the full presantation deck data described in json_content.
   2. Examine each entry within image_information and table_information.
   3. Decide if each entry is relevant based on its caption, path, or any other information provided.
-     - For example, if an image has a caption that obviously does not fit into any section or does not relate to the presantation deck's content outline, deem it “unimportant.”
-  4. Keep only those images/tables you consider "important" for the presantation deck (i.e., relevant to the topics, sections, or discussions mentioned in json_content).
-  5. Produce an output containing just two keys: "image_information" for the filtered images, and "table_information" for the filtered tables. Each of these keys should map to an array of filtered objects.
+     - For example, if an image has a caption that obviously does not fit into any section or does not relate to the presantation deck's content outline, deem it unimportant.
+     - Figures, diagrams, plots, qualitative results, architecture images, example outputs, ablations, benchmarks, and tables that are typical for the paper should usually be kept.
+     - Reject any asset that appears to be a screenshot or crop of almost an entire PDF page, paper page, presentation slide, or document panel rather than a standalone figure/table.
+     - Reject assets that appear to include large amounts of unrelated body text, page margins, headers, footers, page numbers, or multi-paragraph prose around the supposed figure/table.
+     - Reject document-screenshot style assets even if they are technically relevant to the paper topic.
+  4. Keep all images/tables that are important or plausibly useful for the presantation deck.
+  5. Produce an output containing just two keys: "image_information" for the filtered images, and "table_information" for the filtered tables. Each of these keys should map to a JSON object keyed by the original asset ids, not an array.
 
   You must output valid JSON containing only:
     {
@@ -24,9 +34,13 @@ template: |
 
   Your task:
     1. Read the presantation deck outline (json_content).
-    2. Filter image_information and table_information so that only entries relevant to the presantation deck content remain. 
-       • Relevance is determined by matching or relating their captions to the presantation deck’s sections or content. 
-       • If an image or table does not clearly match or support any content in json_content, remove it.
+    2. Filter image_information and table_information so that clearly irrelevant entries are removed while all plausibly relevant entries remain.
+       • Relevance is determined by matching or relating their captions to the presantation deck’s sections, methods, experiments, results, tasks, or content.
+       • If an image or table clearly matches or plausibly supports any content in json_content, keep it.
+       • Only remove an asset if it is clearly unrelated, redundant junk, or obviously unusable.
+       • Also remove any asset that looks like a whole-page or whole-slide screenshot, a cropped paper page, or a document panel with lots of surrounding prose instead of a focused standalone visual.
+       • Prefer standalone visuals. If an asset seems to contain the figure plus a large amount of unrelated page text, margins, or layout chrome, remove it.
+       • If you are unsure, keep it.
     3. Return a JSON with the structure:
        {
          "image_information": <filtered image information JSON>,
@@ -39,7 +53,8 @@ template: |
 
   Note:
   • If no entries remain for either images or tables, just return an empty dict for that key.
-  • Keep at most 5 entries in image_information and table_information respectively.
+  • Keep the original dict structure keyed by the asset ids from the input. Do not return arrays.
+  • Prefer keeping more usable assets rather than aggressively pruning. You may keep up to 12 images and up to 12 tables.
   • Make sure the JSON you output is valid.
 
   Please provide only the JSON object as your final output.
