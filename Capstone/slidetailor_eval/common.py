@@ -101,7 +101,17 @@ def extract_json_object(raw_text: str) -> dict[str, Any]:
     end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise ValueError(f"Could not find JSON object in response: {raw_text[:400]}")
-    return json.loads(text[start : end + 1])
+    json_text = text[start : end + 1]
+    try:
+        return json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        # Some model replies include stray backslashes inside the free-form reason
+        # field, which makes otherwise-correct JSON fail with "Invalid \\escape".
+        # Repair only unsupported backslash escapes and retry.
+        if "Invalid \\escape" not in str(exc):
+            raise
+        repaired = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", json_text)
+        return json.loads(repaired)
 
 
 def extract_message_text(message: Any) -> str:
