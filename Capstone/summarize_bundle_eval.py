@@ -14,11 +14,9 @@ from typing import Any
 METRIC_KEYS = [
     "core_coverage_topic_iou",
     "geometry_aware_density_gad_geom",
-    "slidetailor_aesthetic_quality_deck_score",
     "visual_appeal_deck_score",
     "logical_flow_deck_score",
     "paper_faithfulness_deck_score",
-    "slidetailor_content_informativeness_deck_score",
 ]
 
 
@@ -65,11 +63,9 @@ def summarize_bundle_eval_root(
 
         row["core_coverage_topic_iou"] = safe_float(((metrics.get("core_coverage") or {}).get("topic_iou")))
         row["geometry_aware_density_gad_geom"] = safe_float(((metrics.get("geometry_aware_density") or {}).get("gad_geom")))
-        row["slidetailor_aesthetic_quality_deck_score"] = safe_float(((metrics.get("slidetailor_aesthetic_quality") or {}).get("deck_score")))
         row["visual_appeal_deck_score"] = safe_float(((metrics.get("visual_appeal") or {}).get("deck_score")))
         row["logical_flow_deck_score"] = safe_float(((metrics.get("logical_flow") or {}).get("deck_score")))
         row["paper_faithfulness_deck_score"] = safe_float(((metrics.get("paper_faithfulness") or {}).get("deck_score")))
-        row["slidetailor_content_informativeness_deck_score"] = safe_float(((metrics.get("slidetailor_content_informativeness") or {}).get("deck_score")))
         for key, reason in skipped.items():
             skip_key = f"{variant}:{key}:{reason}"
             skipped_counts[skip_key] = skipped_counts.get(skip_key, 0) + 1

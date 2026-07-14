@@ -50,16 +50,14 @@ def build_eval_skip_flags(args: argparse.Namespace) -> list[str]:
         flags.append("--skip-core-coverage")
     if args.skip_gad:
         flags.append("--skip-gad")
-    if args.skip_aesthetic:
-        flags.append("--skip-aesthetic")
     if args.skip_visual_appeal:
         flags.append("--skip-visual-appeal")
+    if args.skip_layout_correctness:
+        flags.append("--skip-layout-correctness")
     if args.skip_logical_flow:
         flags.append("--skip-logical-flow")
     if args.skip_faithfulness:
         flags.append("--skip-faithfulness")
-    if args.skip_content:
-        flags.append("--skip-content")
     return flags
 
 
@@ -69,16 +67,14 @@ def build_compare_metric_args(args: argparse.Namespace) -> list[str]:
         metric_keys.append("core_coverage_topic_iou")
     if not args.skip_gad:
         metric_keys.append("geometry_aware_density_gad_geom")
-    if not args.skip_aesthetic:
-        metric_keys.append("slidetailor_aesthetic_quality_deck_score")
     if not args.skip_visual_appeal:
         metric_keys.append("visual_appeal_deck_score")
+    if not args.skip_layout_correctness:
+        metric_keys.append("layout_correctness_deck_score")
     if not args.skip_logical_flow:
         metric_keys.append("logical_flow_deck_score")
     if not args.skip_faithfulness:
         metric_keys.append("paper_faithfulness_deck_score")
-    if not args.skip_content:
-        metric_keys.append("slidetailor_content_informativeness_deck_score")
     if not metric_keys:
         raise ValueError("At least one evaluation metric must be included.")
     return ["--metrics", *metric_keys]
@@ -150,11 +146,10 @@ def main() -> None:
     parser.add_argument("--core-coverage-model", default="gpt-5.4-nano")
     parser.add_argument("--skip-core-coverage", action="store_true")
     parser.add_argument("--skip-gad", action="store_true")
-    parser.add_argument("--skip-aesthetic", action="store_true")
     parser.add_argument("--skip-visual-appeal", action="store_true")
+    parser.add_argument("--skip-layout-correctness", action="store_true")
     parser.add_argument("--skip-logical-flow", action="store_true")
     parser.add_argument("--skip-faithfulness", action="store_true")
-    parser.add_argument("--skip-content", action="store_true")
     args = parser.parse_args()
 
     if not PYTHON.exists():

@@ -25,11 +25,10 @@ from typing import Any
 ALL_METRICS = {
     "core_coverage_topic_iou": ("core_coverage", "topic_iou"),
     "geometry_aware_density_gad_geom": ("geometry_aware_density", "gad_geom"),
-    "slidetailor_aesthetic_quality_deck_score": ("slidetailor_aesthetic_quality", "deck_score"),
     "visual_appeal_deck_score": ("visual_appeal", "deck_score"),
+    "layout_correctness_deck_score": ("layout_correctness", "deck_score"),
     "logical_flow_deck_score": ("logical_flow", "deck_score"),
     "paper_faithfulness_deck_score": ("paper_faithfulness", "deck_score"),
-    "slidetailor_content_informativeness_deck_score": ("slidetailor_content_informativeness", "deck_score"),
 }
 
 SYSTEM_LABELS = {

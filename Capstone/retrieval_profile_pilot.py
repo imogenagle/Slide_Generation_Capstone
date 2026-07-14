@@ -751,21 +751,55 @@ def build_deck_multimodal_content(
     deck_evidence: list[dict[str, Any]],
     excluded_slide_keys: set[str] | None = None,
     max_slides_per_deck: int | None = None,
+    max_total_images: int = 48,
 ) -> list[dict[str, Any]]:
     excluded_slide_keys = excluded_slide_keys or set()
     content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+    if not deck_evidence or max_total_images <= 0:
+        return content
+
+    per_deck_caps: dict[str, int] = {}
+    available_counts: dict[str, int] = {}
+    remaining_budget = max_total_images
+
     for deck in deck_evidence:
         all_slide_paths = list(deck.get("all_slide_paths") or [])
         if max_slides_per_deck is not None and len(all_slide_paths) > max_slides_per_deck:
+            available_counts[deck["paper_id"]] = max_slides_per_deck
+        else:
+            available_counts[deck["paper_id"]] = len(all_slide_paths)
+        per_deck_caps[deck["paper_id"]] = 0
+
+    deck_ids = [deck["paper_id"] for deck in deck_evidence]
+    while remaining_budget > 0:
+        progressed = False
+        for deck_id in deck_ids:
+            if remaining_budget <= 0:
+                break
+            if per_deck_caps[deck_id] < available_counts[deck_id]:
+                per_deck_caps[deck_id] += 1
+                remaining_budget -= 1
+                progressed = True
+        if not progressed:
+            break
+
+    for deck in deck_evidence:
+        all_slide_paths = list(deck.get("all_slide_paths") or [])
+        effective_cap = per_deck_caps.get(deck["paper_id"], 0)
+        if effective_cap <= 0:
+            sampled_slide_paths = []
+            slide_count_note = f"Slide count: {deck['slide_count']} (sending 0 slides due to global image budget)"
+        elif len(all_slide_paths) > effective_cap:
             chosen_indices = {
-                int(round(i * (len(all_slide_paths) - 1) / max(1, max_slides_per_deck - 1)))
-                for i in range(max_slides_per_deck)
+                int(round(i * (len(all_slide_paths) - 1) / max(1, effective_cap - 1)))
+                for i in range(effective_cap)
             }
             sampled_slide_paths = [
                 slide_path for idx, slide_path in enumerate(all_slide_paths) if idx in chosen_indices
             ]
             slide_count_note = (
-                f"Slide count: {deck['slide_count']} (sending {len(sampled_slide_paths)} sampled slides due to safety fallback)"
+                f"Slide count: {deck['slide_count']} "
+                f"(sending {len(sampled_slide_paths)} sampled slides due to image budget)"
             )
         else:
             sampled_slide_paths = all_slide_paths

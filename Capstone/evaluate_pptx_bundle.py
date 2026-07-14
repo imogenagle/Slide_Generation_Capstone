@@ -30,9 +30,8 @@ from Capstone.slidetailor_eval.common import (
     normalize_paper_name_from_paper_id,
     render_pptx_to_images,
 )
-from Capstone.slidetailor_eval.evaluate_aesthetic_quality import evaluate_aesthetic_quality
-from Capstone.slidetailor_eval.evaluate_content_informativeness import evaluate_content_informativeness
 from Capstone.slidetailor_eval.evaluate_logical_flow import evaluate_logical_flow
+from Capstone.slidetailor_eval.evaluate_layout_correctness import evaluate_layout_correctness
 from Capstone.slidetailor_eval.evaluate_paper_faithfulness import evaluate_paper_faithfulness
 from Capstone.slidetailor_eval.evaluate_visual_appeal import evaluate_visual_appeal
 
@@ -82,7 +81,7 @@ def main() -> None:
     parser.add_argument("--paper-name", default=None, help="Optional explicit contents-folder style name.")
     parser.add_argument("--title", default=None, help="Optional explicit paper title override.")
     parser.add_argument("--original-slide-dir", type=Path, default=None, help="Optional explicit reference slide image directory.")
-    parser.add_argument("--source-document", type=Path, default=None, help="Optional explicit source document path for content informativeness.")
+    parser.add_argument("--source-document", type=Path, default=None, help="Optional explicit source document path for source-grounded evals.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Optional per-deck output directory.")
     parser.add_argument("--render-dpi", type=int, default=120)
     parser.add_argument("--core-coverage-model", default="gpt-5.4-nano")
@@ -91,11 +90,10 @@ def main() -> None:
     parser.add_argument("--max-original-slides", type=int, default=MAX_IMAGES_PER_REQUEST)
     parser.add_argument("--skip-core-coverage", action="store_true")
     parser.add_argument("--skip-gad", action="store_true")
-    parser.add_argument("--skip-aesthetic", action="store_true")
     parser.add_argument("--skip-visual-appeal", action="store_true")
+    parser.add_argument("--skip-layout-correctness", action="store_true")
     parser.add_argument("--skip-logical-flow", action="store_true")
     parser.add_argument("--skip-faithfulness", action="store_true")
-    parser.add_argument("--skip-content", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -172,20 +170,6 @@ def main() -> None:
             "path": "geometry_aware_density.json",
         }
 
-    if not args.skip_aesthetic:
-        result = evaluate_aesthetic_quality(
-            pptx_path=args.generated_pptx,
-            slide_images=slide_images,
-            model=args.judge_model,
-            request_timeout=args.request_timeout,
-            verbose=args.verbose,
-        )
-        write_json(output_dir / "slidetailor_aesthetic_quality.json", result)
-        summary["metrics"]["slidetailor_aesthetic_quality"] = {
-            "deck_score": result.get("deck_score"),
-            "path": "slidetailor_aesthetic_quality.json",
-        }
-
     if not args.skip_visual_appeal:
         result = evaluate_visual_appeal(
             pptx_path=args.generated_pptx,
@@ -198,6 +182,16 @@ def main() -> None:
         summary["metrics"]["visual_appeal"] = {
             "deck_score": result.get("deck_score"),
             "path": "visual_appeal.json",
+        }
+
+    if not args.skip_layout_correctness:
+        result = evaluate_layout_correctness(
+            pptx_path=args.generated_pptx,
+        )
+        write_json(output_dir / "layout_correctness.json", result)
+        summary["metrics"]["layout_correctness"] = {
+            "deck_score": result.get("deck_score"),
+            "path": "layout_correctness.json",
         }
 
     if not args.skip_logical_flow:
@@ -213,24 +207,6 @@ def main() -> None:
             "deck_score": result.get("deck_score"),
             "path": "logical_flow.json",
         }
-
-    if not args.skip_content:
-        if source_document and source_document.exists():
-            result = evaluate_content_informativeness(
-                pptx_path=args.generated_pptx,
-                slide_images=slide_images,
-                source_document_path=source_document,
-                model=args.judge_model,
-                request_timeout=args.request_timeout,
-                verbose=args.verbose,
-            )
-            write_json(output_dir / "slidetailor_content_informativeness.json", result)
-            summary["metrics"]["slidetailor_content_informativeness"] = {
-                "deck_score": result.get("deck_score"),
-                "path": "slidetailor_content_informativeness.json",
-            }
-        else:
-            summary["skipped"]["slidetailor_content_informativeness"] = "Missing source_document."
 
     if not args.skip_faithfulness:
         if source_document and source_document.exists():

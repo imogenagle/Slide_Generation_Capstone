@@ -466,7 +466,7 @@ def _expand_sparse_slide_pictures(slide) -> None:
     text_fill_ratios = []
     for shape in text_shapes:
         tf = shape.text_frame
-        min_size_pt = 12.0 if "title" in (getattr(shape, "name", "") or "").lower() else 10.0
+        min_size_pt = 12.0 if "title" in (getattr(shape, "name", "") or "").lower() else 15.0
         text_fill_ratios.append(min(_text_frame_fill_ratio(shape, tf, min_size_pt), 1.0))
 
     avg_text_fill = sum(text_fill_ratios) / len(text_fill_ratios) if text_fill_ratios else 0.0
@@ -673,12 +673,18 @@ VISUAL_TEMPLATE_IDS = {
 }
 
 
-def _fallback_text_only_template(template_id: str, slide_info: Dict) -> str:
+def _fallback_text_only_template(
+    template_id: str,
+    slide_info: Dict,
+    visual_paths: List[Path] | None = None,
+) -> str:
     if template_id not in VISUAL_TEMPLATE_IDS:
+        return template_id
+    if visual_paths:
         return template_id
     has_requested_visuals = bool(slide_info.get("images") or slide_info.get("tables") or slide_info.get("formulas"))
     if has_requested_visuals:
-        return template_id
+        return "T1_TextOnly"
     return "T1_TextOnly"
 
 
@@ -1181,7 +1187,51 @@ def _nums_from_files(files):
             out.add(int(m[-1]))
     return out
 
+def _normalize_sectioned_data(data):
+    if isinstance(data, dict):
+        sections = data.get("sections", [])
+        if isinstance(sections, list):
+            return {"sections": sections}
+        return {"sections": []}
+
+    if isinstance(data, list):
+        normalized_sections = []
+        for section in data:
+            if not isinstance(section, dict):
+                continue
+            title = (
+                section.get("section_title")
+                or section.get("title")
+                or ""
+            )
+            section_number = section.get("section_number")
+            content = section.get("content") if isinstance(section.get("content"), list) else []
+
+            subsection_payload = {"title": title}
+            formula_idx = 1
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("type", "")).lower() != "formula":
+                    continue
+                latex = (item.get("latex") or item.get("content") or "").strip()
+                if not latex:
+                    continue
+                subsection_payload[f"formula{formula_idx}"] = latex
+                formula_idx += 1
+
+            normalized_sections.append(
+                {
+                    "title": f"{section_number} {title}".strip() if section_number else title,
+                    "subsections": [subsection_payload],
+                }
+            )
+        return {"sections": normalized_sections}
+
+    return {"sections": []}
+
 def _best_match(data, sec_title: str, sub_title: str, min_ratio: float = 0.55):
+    data = _normalize_sectioned_data(data)
     best_sec, best_sec_score = None, 0.0
     for sec in data.get("sections", []):
         s = difflib.SequenceMatcher(None, sec.get("title","").lower(), (sec_title or "").lower()).ratio()
@@ -1427,7 +1477,7 @@ def _fill_bullets(
     lvl0_size=24,
     lvl1_size=24,
     font_name: str | None = None,
-    min_size_pt: float = 10.0,
+    min_size_pt: float = 15.0,
     max_size_pt: float | None = None,
     target_min_fill: float = 0.46,
     target_max_fill: float = 0.82,
@@ -1476,7 +1526,7 @@ def _stabilize_slide_text_shapes(slide) -> None:
         if not tf or not any(_paragraph_text(p).strip() for p in tf.paragraphs):
             continue
         name = (getattr(shape, "name", "") or "").lower()
-        min_size_pt = 12.0 if "title" in name else 10.0
+        min_size_pt = 12.0 if "title" in name else 15.0
         _shrink_text_frame_to_fit(shape, tf, min_size_pt=min_size_pt)
     _expand_sparse_slide_pictures(slide)
 from pptx.enum.shapes import PP_PLACEHOLDER
@@ -1735,7 +1785,7 @@ def generate_pptx_from_plan(
         visuals = resolve_visual_paths(slide_info, args)
         layout_names = [layout.name for layout in prs.slide_layouts]
         template_id = str(slide_info["template_id"])
-        template_id = _fallback_text_only_template(template_id, slide_info)
+        template_id = _fallback_text_only_template(template_id, slide_info, visuals)
         if _should_use_top_visual_layout(slide_info, visuals):
             template_id = "T4_ImageTop"
         template_id = _prefer_stacked_formula_template(template_id, slide_info, visuals)
@@ -1795,12 +1845,12 @@ def generate_pptx_from_plan(
                     _set_paragraph_font_size(sp, lvl1_size)
                     _set_paragraph_font_name(sp, body_font_name)
             _enable_shrink_to_fit(tf)
-            _shrink_text_frame_to_fit(body_ph, tf, min_size_pt=10.0)
+            _shrink_text_frame_to_fit(body_ph, tf, min_size_pt=15.0)
             has_visuals = bool(slide_info.get("images") or slide_info.get("tables") or slide_info.get("formulas"))
             _grow_text_frame_to_fill(
                 body_ph,
                 tf,
-                min_size_pt=10.0,
+                min_size_pt=15.0,
                 max_size_pt=30.0 if not has_visuals else 26.0,
                 target_min_fill=0.58 if not has_visuals else 0.46,
                 target_max_fill=0.86 if not has_visuals else 0.82,

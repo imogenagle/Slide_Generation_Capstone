@@ -221,6 +221,15 @@ def main() -> None:
         verbose=args.verbose,
     )
 
+    numeric_category_winners = {
+        target_key: metric_report.get("closer_to_target")
+        for target_key, metric_report in (numeric_report.get("comparison") or {}).items()
+    }
+    all_metric_winners = dict(numeric_category_winners)
+    all_metric_winners["section"] = section_report["summary"]["winner"]
+    all_metric_winners["color_palette"] = numeric_report["summary"].get("color_palette_winner")
+    all_metric_winners["font"] = numeric_report["summary"].get("font_winner")
+
     final = {
         "inputs": {
             "profile": str(args.profile),
@@ -237,8 +246,10 @@ def main() -> None:
             "numeric_metric_wins": numeric_report["summary"]["personalized_metric_wins"],
             "numeric_metric_losses": numeric_report["summary"]["baseline_metric_wins"],
             "numeric_ties": numeric_report["summary"]["tied_metrics"],
+            "numeric_category_winners": numeric_category_winners,
             "color_palette_winner": numeric_report["summary"].get("color_palette_winner"),
             "font_winner": numeric_report["summary"].get("font_winner"),
+            "all_metric_winners": all_metric_winners,
         },
     }
 

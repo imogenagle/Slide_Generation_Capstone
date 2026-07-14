@@ -17,11 +17,10 @@ template: |
   - Readable text sizing: not too small, not too dense, not compressed
   - Well-sized and well-placed formulas, tables, and images
   - Titles and headers fit cleanly and align naturally with the slide structure
-  - Clear visual balance and hierarchy
 
   A low score should be given whenever any major layout defect is present, especially:
   overlapping elements, off-slide text, unreadably small text, badly oversized or tiny
-  formulas/tables/images, or severe unused whitespace.
+  formulas/tables/images, or if the majority of the slide contains unused whitespace.
 
   1 Point (Poor):
   Severe layout failures. Elements overlap, run off the slide, are unreadably small or
@@ -29,11 +28,11 @@ template: |
 
   2 Points (Below Average):
   Noticeable layout problems. Readability is impaired by poor sizing, awkward spacing,
-  weak title fitting, or poorly scaled formulas/tables/images.
+  weak title fitting, text that is cropped off at the edges of the slide, or poorly scaled formulas/tables/images.
 
   3 Points (Average):
   Basically usable, but with clear room for improvement in spacing, balance, text density,
-  title fitting, or visual sizing. No catastrophic flaws, but the slide does not feel clean.
+  title fitting, text overflow, or visual sizing. No catastrophic flaws, but the slide does not feel clean.
 
   4 Points (Good):
   Clean and readable layout with only minor issues in spacing, density, title fit, or

@@ -144,15 +144,17 @@ def resolve_output_path(metric_name: str, output: Path | None, stem: str) -> Pat
     return out_dir / f"{stem}.{metric_name}.json"
 
 
-def _normalize_score(value: Any) -> float:
+def _normalize_score(value: Any, scale: str = "zero_to_one") -> float:
     try:
         numeric = float(value)
     except Exception:
         return 0.0
-    if numeric > 1.0:
+    if scale == "one_to_five":
         numeric = max(1.0, min(5.0, numeric))
         return round((numeric - 1.0) / 4.0, 4)
-    return max(0.0, min(1.0, numeric))
+    if scale == "zero_to_one":
+        return max(0.0, min(1.0, numeric))
+    raise ValueError(f"Unsupported score scale: {scale}")
 
 
 def encode_image_data_uri(image_path: Path) -> str:
@@ -512,6 +514,7 @@ def evaluate_single_slide_images(
     model: str,
     request_timeout: float,
     verbose: bool,
+    score_scale: str = "one_to_five",
     prompt_values: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     prompt_cfg = render_prompt(prompt_path, **(prompt_values or {}))
@@ -530,7 +533,7 @@ def evaluate_single_slide_images(
             {
                 "slide_index": index,
                 "slide_image": image_path.name,
-                "score": _normalize_score(response.get("score")),
+                "score": _normalize_score(response.get("score"), scale=score_scale),
                 "reason": str(response.get("reason", "")).strip(),
             }
         )
