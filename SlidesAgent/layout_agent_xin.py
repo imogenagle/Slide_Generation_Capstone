@@ -13,6 +13,19 @@ from SlidesAgent.personalization_targets import (
     build_numeric_target_summary,
     profile_target_tolerance_multiplier,
 )
+from SlidesAgent.output_paths import (
+    figures_json_path,
+    formula_match_path,
+    formula_mode3_index_path,
+    images_filtered_path,
+    personalization_trace_path,
+    raw_content_path,
+    slide_plan_draft_path,
+    slide_plan_path,
+    slide_plan_path_for as slide_plan_path_for_output,
+    slide_plan_repair_report_path,
+    tables_filtered_path,
+)
 from SlidesAgent.slide_plan_summary import summarize_slide_plan
 from slidegen_openai_utils import build_openai_client, resolve_direct_model_name
 from camel.models import ModelFactory          
@@ -49,29 +62,34 @@ def neutral_paper_name(paper_name: str) -> str:
 
 
 def slide_plan_path_for(paper_name: str, model_name_t: str, model_name_v: str, variant_suffix: str) -> Path:
-    return Path(
-        f"contents/{paper_name}/"
-        f"<{model_name_t}_{model_name_v}>_slide_plan{variant_suffix}.json"
+    return slide_plan_path_for_output(
+        output_dir=None,
+        paper_name=paper_name,
+        model_name_t=model_name_t,
+        model_name_v=model_name_v,
+        variant_suffix=variant_suffix,
     )
 
 
 def load_existing_anchor_plan(args: Any) -> tuple[Dict[str, Any] | None, str | None]:
-    local_anchor_path = slide_plan_path_for(
-        args.paper_name,
-        args.model_name_t,
-        args.model_name_v,
-        anchor_variant_suffix(args),
+    local_anchor_path = slide_plan_path_for_output(
+        output_dir=getattr(args, "output_dir", "."),
+        paper_name=args.paper_name,
+        model_name_t=args.model_name_t,
+        model_name_v=args.model_name_v,
+        variant_suffix=anchor_variant_suffix(args),
     )
     candidate_paths: List[Path] = [local_anchor_path]
 
     base_paper_name = neutral_paper_name(args.paper_name)
     if base_paper_name and base_paper_name != args.paper_name:
         candidate_paths.append(
-            slide_plan_path_for(
-                base_paper_name,
-                args.model_name_t,
-                args.model_name_v,
-                "_baseline",
+            slide_plan_path_for_output(
+                output_dir=getattr(args, "output_dir", "."),
+                paper_name=base_paper_name,
+                model_name_t=args.model_name_t,
+                model_name_v=args.model_name_v,
+                variant_suffix="_baseline",
             )
         )
 
@@ -764,27 +782,29 @@ def build_profile_trace(author_preference_profile: Dict[str, Any] | None) -> Dic
         "distilled_from": author_preference_profile.get("distilled_from"),
         "planning_preferences": author_preference_profile.get("planning_preferences"),
         "numeric_preferences": author_preference_profile.get("numeric_preferences"),
+        "font_preferences": author_preference_profile.get("font_preferences"),
+        "color_preferences": author_preference_profile.get("color_preferences"),
     }
 
 
 def generate_slide_plan(
     args 
 ) -> Dict[str, Any]: 
-    paper_outline_json = f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_raw_content.json' 
-    figures_path=f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_figures.json'
+    paper_outline_json = raw_content_path(args)
+    figures_path = figures_json_path(args)
     
     if args.formula_mode == 1 or args.formula_mode == 2:
         print("👉 Using Docling bbox crop method...") 
-        formulas_path=f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_formula_match.json'
+        formulas_path = formula_match_path(args)
     elif args.formula_mode == 3:
         print("👉 Using user-marked boxes method...")
-        formulas_path=f'contents/{args.paper_name}/formula_index_formula_mode3.json'
+        formulas_path = formula_mode3_index_path(args)
 
     raw_json = json.loads(Path(paper_outline_json).read_text(encoding="utf-8"))
     figures_json = json.loads(Path(figures_path).read_text(encoding="utf-8"))
     formulas_json = json.loads(Path(formulas_path).read_text(encoding="utf-8"))
-    images = json.loads(Path(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/images_filtered.json').read_text(encoding="utf-8"))
-    tables = json.loads(Path(f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/tables_filtered.json' ).read_text(encoding="utf-8"))
+    images = json.loads(images_filtered_path(args).read_text(encoding="utf-8"))
+    tables = json.loads(tables_filtered_path(args).read_text(encoding="utf-8"))
     asset_support = derive_asset_support(
         formulas_json=formulas_json,
         images=images,
@@ -873,10 +893,8 @@ def generate_slide_plan(
     repair_attempted = False
     repair_report_path: str | None = None
 
-    plan_debug_path = (
-        f'contents/{args.paper_name}/'
-        f'<{args.model_name_t}_{args.model_name_v}>_slide_plan_draft{plan_variant_suffix(args)}.json'
-    )
+    plan_debug_path = slide_plan_draft_path(args, plan_variant_suffix(args))
+    plan_debug_path.parent.mkdir(parents=True, exist_ok=True)
     with open(plan_debug_path, 'w', encoding="utf-8") as f:
         json.dump(slide_plan, f, indent=4)
 
@@ -920,10 +938,7 @@ def generate_slide_plan(
                 draft_repair_directives,
                 repaired_repair_directives,
             )
-            repair_report_path = (
-                f'contents/{args.paper_name}/'
-                f'<{args.model_name_t}_{args.model_name_v}>_slide_plan_repair_report{plan_variant_suffix(args)}.json'
-            )
+            repair_report_path = slide_plan_repair_report_path(args, plan_variant_suffix(args))
             repair_report = {
                 "anchor_plan_source": draft_plan_source,
                 "draft_summary": draft_summary,
@@ -941,17 +956,12 @@ def generate_slide_plan(
                 out_tok += repair_out_tok
                 time_taken += repair_time_taken
 
-    slide_plan_path = (
-        f'contents/{args.paper_name}/'
-        f'<{args.model_name_t}_{args.model_name_v}>_slide_plan{plan_variant_suffix(args)}.json'
-    )
-    with open(slide_plan_path, 'w', encoding="utf-8") as f:
+    final_slide_plan_path = slide_plan_path(args, plan_variant_suffix(args))
+    final_slide_plan_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(final_slide_plan_path, 'w', encoding="utf-8") as f:
         json.dump(slide_plan, f, indent=4)
     final_summary = summarize_slide_plan(slide_plan)
-    trace_path = (
-        f'contents/{args.paper_name}/'
-        f'<{args.model_name_t}_{args.model_name_v}>_personalization_trace{plan_variant_suffix(args)}.json'
-    )
+    trace_path = personalization_trace_path(args, plan_variant_suffix(args))
     final_plan_source = draft_plan_source
     if acceptance and acceptance.get("accepted"):
         final_plan_source = "accepted_repair"
@@ -965,14 +975,14 @@ def generate_slide_plan(
         "author_profile_summary": build_profile_trace(author_preference_profile),
         "asset_support": asset_support,
         "paths": {
-            "paper_outline_json": paper_outline_json,
-            "figures_json": figures_path,
-            "formulas_json": formulas_path,
-            "images_json": f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/images_filtered.json',
-            "tables_json": f'<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/tables_filtered.json',
-            "draft_plan_json": plan_debug_path,
-            "repair_report_json": repair_report_path,
-            "final_plan_json": slide_plan_path,
+            "paper_outline_json": str(paper_outline_json),
+            "figures_json": str(figures_path),
+            "formulas_json": str(formulas_path),
+            "images_json": str(images_filtered_path(args)),
+            "tables_json": str(tables_filtered_path(args)),
+            "draft_plan_json": str(plan_debug_path),
+            "repair_report_json": str(repair_report_path) if repair_report_path else None,
+            "final_plan_json": str(final_slide_plan_path),
         },
         "planner": {
             "source": draft_plan_source,

@@ -77,7 +77,7 @@ def evaluate_template_similarity(
         "source": "SlideTailor-derived",
         "metric": "template_similarity",
         "generated_pptx": str(generated_pptx),
-        "score": _normalize_score(response.get("score", 0.0)),
+        "score": _normalize_score(response.get("score", 0.0), scale="one_to_five"),
         "reason": str(response.get("reason", "")).strip(),
         "generated_slide_count": len(generated_slide_images),
         "template_slide_count": len(template_slide_images),

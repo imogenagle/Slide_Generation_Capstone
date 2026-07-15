@@ -84,7 +84,6 @@ HARD RULES
 15. Before returning the outline, do a deck-budget sanity check:
    • estimate whether this outline would likely create too many slides for the requested mode and profile.
    • if yes, merge neighboring subsections that support the same presentation point before returning the JSON.
- 
 OPTIONAL RULES  
 • If the document explicitly labels parts as “Step 1 / Step 2 / …” (or stages, phases, modules), you may map **each step to a separate subsection**.  
 • It is acceptable for a subsection title to be identical to its parent section title if that improves clarity.  

@@ -23,6 +23,20 @@ import json
 import difflib
 from pptx import Presentation
 from SlidesAgent.apply_color import *
+from SlidesAgent.output_paths import (
+    figures_json_path,
+    formula_crop_path,
+    formula_images_dir,
+    formula_match_path,
+    images_json_path as pipeline_images_json_path,
+    output_pptx_path,
+    paper_image_tables_dir,
+    raw_content_path,
+    referenced_artifacts_dir,
+    slide_plan_path,
+    tables_json_path as pipeline_tables_json_path,
+    themed_output_pptx_path,
+)
 
 
 
@@ -41,6 +55,11 @@ TEMPLATE_ID_ALIASES = {
 EMU_PER_INCH = 914400
 EMU_PER_PT = 12700
 
+_TITLE_CASE_SMALL_WORDS = {
+    "a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "of", "on",
+    "or", "per", "the", "to", "vs", "via", "with", "without",
+}
+
 
 def normalize_template_id(template_id: str, layout_names: List[str]) -> str:
     normalized = TEMPLATE_ID_ALIASES.get(template_id, template_id)
@@ -53,6 +72,70 @@ def normalize_template_id(template_id: str, layout_names: List[str]) -> str:
         return close_match[0]
 
     return normalized
+
+
+def _split_camel_case(text: str) -> str:
+    parts: list[str] = []
+    for token in re.split(r"(\s+)", text):
+        if not token or token.isspace():
+            parts.append(token)
+            continue
+        if re.fullmatch(r"[A-Z]{2,}s", token):
+            parts.append(token)
+            continue
+        token = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", token)
+        token = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z]{2,})", " ", token)
+        parts.append(token)
+    return "".join(parts)
+
+
+def _normalize_slide_heading(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+
+    raw = raw.replace("_", " ")
+    raw = _split_camel_case(raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+
+    tokens = re.split(r"(\s+)", raw)
+    word_indices = [idx for idx, token in enumerate(tokens) if token and not token.isspace()]
+    if not word_indices:
+        return raw
+
+    first_word_idx = word_indices[0]
+    last_word_idx = word_indices[-1]
+
+    normalized_tokens: list[str] = []
+    for idx, token in enumerate(tokens):
+        if not token or token.isspace():
+            normalized_tokens.append(token)
+            continue
+
+        lead = re.match(r"^[^A-Za-z0-9]*", token).group(0)
+        trail = re.search(r"[^A-Za-z0-9]*$", token).group(0)
+        core = token[len(lead): len(token) - len(trail) if trail else len(token)]
+        if not core:
+            normalized_tokens.append(token)
+            continue
+
+        if any(ch.isalpha() for ch in core):
+            if core.isupper() and len(core) <= 5:
+                core_norm = core
+            elif re.search(r"[A-Z]", core) and re.search(r"[a-z]", core) and not core.islower() and not core.isupper():
+                core_norm = core[0].upper() + core[1:]
+            else:
+                lower_core = core.lower()
+                if idx not in {first_word_idx, last_word_idx} and lower_core in _TITLE_CASE_SMALL_WORDS:
+                    core_norm = lower_core
+                else:
+                    core_norm = lower_core.capitalize()
+        else:
+            core_norm = core
+
+        normalized_tokens.append(f"{lead}{core_norm}{trail}")
+
+    return "".join(normalized_tokens)
 
 
 def _insert_picture_keep_ratio(ph, img_path: Path):
@@ -145,6 +228,21 @@ def _set_paragraph_font_size(paragraph, size_pt: float) -> None:
     paragraph.font.size = Pt(size_pt)
     for run in paragraph.runs:
         run.font.size = Pt(size_pt)
+
+
+def _set_paragraph_font_name(paragraph, font_name: str | None) -> None:
+    if not font_name:
+        return
+    paragraph.font.name = font_name
+    for run in paragraph.runs:
+        run.font.name = font_name
+
+
+def _apply_text_frame_font_name(text_frame, font_name: str | None) -> None:
+    if text_frame is None or not font_name:
+        return
+    for paragraph in text_frame.paragraphs:
+        _set_paragraph_font_name(paragraph, font_name)
 
 
 def _enable_shrink_to_fit(text_frame, max_size_pt: float | None = None) -> None:
@@ -368,7 +466,7 @@ def _expand_sparse_slide_pictures(slide) -> None:
     text_fill_ratios = []
     for shape in text_shapes:
         tf = shape.text_frame
-        min_size_pt = 12.0 if "title" in (getattr(shape, "name", "") or "").lower() else 10.0
+        min_size_pt = 12.0 if "title" in (getattr(shape, "name", "") or "").lower() else 15.0
         text_fill_ratios.append(min(_text_frame_fill_ratio(shape, tf, min_size_pt), 1.0))
 
     avg_text_fill = sum(text_fill_ratios) / len(text_fill_ratios) if text_fill_ratios else 0.0
@@ -429,6 +527,7 @@ def _set_shape_text_with_fit(
     text: str,
     max_size_pt: float,
     min_size_pt: float = 12.0,
+    font_name: str | None = None,
     alignment=PP_ALIGN.LEFT,
     vertical_anchor=MSO_ANCHOR.TOP,
 ) -> None:
@@ -437,12 +536,14 @@ def _set_shape_text_with_fit(
     tf = shape.text_frame
     tf.clear()
     tf.paragraphs[0].text = text or ""
+    _apply_text_frame_font_name(tf, font_name)
     _compact_text_frame(tf)
     _enable_shrink_to_fit(tf, max_size_pt=max_size_pt)
     _shrink_text_frame_to_fit(shape, tf, min_size_pt=min_size_pt)
     tf.vertical_anchor = vertical_anchor
     for paragraph in tf.paragraphs:
         paragraph.alignment = alignment
+        _set_paragraph_font_name(paragraph, font_name)
 
 
 def _contents_font_size(section_count: int) -> int:
@@ -572,13 +673,53 @@ VISUAL_TEMPLATE_IDS = {
 }
 
 
-def _fallback_text_only_template(template_id: str, slide_info: Dict) -> str:
+def _fallback_text_only_template(
+    template_id: str,
+    slide_info: Dict,
+    visual_paths: List[Path] | None = None,
+) -> str:
     if template_id not in VISUAL_TEMPLATE_IDS:
+        return template_id
+    if visual_paths:
         return template_id
     has_requested_visuals = bool(slide_info.get("images") or slide_info.get("tables") or slide_info.get("formulas"))
     if has_requested_visuals:
-        return template_id
+        return "T1_TextOnly"
     return "T1_TextOnly"
+
+
+def _prefer_stacked_formula_template(
+    template_id: str,
+    slide_info: Dict,
+    visual_paths: List[Path],
+) -> str:
+    if template_id not in {"T14_ImageRight_1Formula", "T15_ImageLeft_1Formula"}:
+        return template_id
+
+    formula_paths = [path for path in visual_paths if "formula" in path.name.lower()]
+    non_formula_paths = [path for path in visual_paths if "formula" not in path.name.lower()]
+    if not formula_paths:
+        return template_id
+
+    bullet_count = len(_normalize_bullets(slide_info.get("bullets") or []))
+
+    # Formula-only slides are usually more legible stacked above text.
+    if not non_formula_paths:
+        return "T18_2formula_TopTextBottom"
+
+    # If the formula is wide, prefer the stacked formula-capable layout
+    # instead of squeezing both text and formula into narrow columns.
+    try:
+        with Image.open(formula_paths[0]) as img:
+            width_px, height_px = img.size
+        aspect_ratio = width_px / max(height_px, 1)
+    except Exception:
+        aspect_ratio = 0.0
+
+    if aspect_ratio >= 2.0 or bullet_count >= 3:
+        return "T16_1Img_2formula_TopTextBottom"
+
+    return template_id
 
 
 def _fallback_missing_template_id(
@@ -675,6 +816,10 @@ def insert_visuals_auto(slide, visuals: list[Path]):
            "Picture" in shape.name
     ]
 
+    # Fill picture slots in a deterministic reading order so stacked formula
+    # templates place assets into the intended non-overlapping boxes.
+    picture_placeholders.sort(key=lambda shape: (shape.top, shape.left, shape.height, shape.width))
+
     if len(visuals) > len(picture_placeholders):
         print(f"Warning: not enough picture placeholders on slide (needed {len(visuals)}, found {len(picture_placeholders)})")
         # remaining = visuals[len(picture_placeholders):]
@@ -761,17 +906,15 @@ def resolve_visual_paths(slide_info, args):
     import json
     from pathlib import Path
 
-    paper = args.paper_name
-    prefix = f"<{args.model_name_t}_{args.model_name_v}>_images_and_tables"
-    base_dir = Path(prefix) / paper
+    base_dir = paper_image_tables_dir(args)
  
-    images_json_path = Path(prefix) / f"{paper}_images.json"
-    tables_json_path = Path(prefix) / f"{paper}_tables.json"
-    images_json = json.load(open(images_json_path, "r", encoding="utf-8")) if images_json_path.exists() else {}
-    tables_json = json.load(open(tables_json_path, "r", encoding="utf-8")) if tables_json_path.exists() else {}
+    image_catalog_path = pipeline_images_json_path(args)
+    table_catalog_path = pipeline_tables_json_path(args)
+    images_json = json.load(open(image_catalog_path, "r", encoding="utf-8")) if image_catalog_path.exists() else {}
+    tables_json = json.load(open(table_catalog_path, "r", encoding="utf-8")) if table_catalog_path.exists() else {}
  
     if args.formula_mode == 3:
-        formulas_dir = Path("contents") / paper / "formula_images"
+        formulas_dir = formula_images_dir(args)
     else:
         formulas_dir = base_dir
  
@@ -880,7 +1023,6 @@ def resolve_visual_paths(slide_info, args):
         if kind == "image":
             direct_patterns = [
                 f"*-picture-{norm}.png",
-                f"*-{norm}.png",
                 f"image_{int(norm):06d}_*.png",
                 f"image_{norm}.png",
             ]
@@ -891,7 +1033,7 @@ def resolve_visual_paths(slide_info, args):
             ]
 
         candidates: list[Path] = []
-        artifacts_dir = base_dir / f"{args.paper_name}-with-image-refs_artifacts"
+        artifacts_dir = referenced_artifacts_dir(args)
         for pattern in direct_patterns:
             candidates.extend(sorted(base_dir.glob(pattern)))
             if artifacts_dir.exists():
@@ -973,7 +1115,8 @@ def resolve_visual_paths(slide_info, args):
         except KeyError:
             fallback = _fallback_visual_file_by_number("image", img_id, name)
             if fallback is None:
-                raise
+                print(f"[layout_filler] skipping missing image asset: {name}")
+                continue
             print(f"[layout_filler] fallback image match for '{name}' -> '{fallback.name}'")
             img_path = fallback
         image_paths.append(img_path)
@@ -1014,12 +1157,7 @@ def resolve_visual_paths(slide_info, args):
         try:
             formula_paths.append(_resolve_and_check(Path(final_path)))
         except FileNotFoundError:
-            fallback = _fallback_visual_file_by_number("image", _norm_digits(fname), fname)
-            if fallback is not None:
-                print(f"[layout_filler] fallback formula match for '{fname}' -> '{fallback.name}'")
-                formula_paths.append(fallback)
-            else:
-                print(f"[layout_filler] skipping missing formula asset: {fname}")
+            print(f"[layout_filler] skipping missing formula asset: {fname}")
     print("formula_paths",formula_paths)
     return _dedupe_paths(image_paths + table_paths + formula_paths)
 
@@ -1049,7 +1187,51 @@ def _nums_from_files(files):
             out.add(int(m[-1]))
     return out
 
+def _normalize_sectioned_data(data):
+    if isinstance(data, dict):
+        sections = data.get("sections", [])
+        if isinstance(sections, list):
+            return {"sections": sections}
+        return {"sections": []}
+
+    if isinstance(data, list):
+        normalized_sections = []
+        for section in data:
+            if not isinstance(section, dict):
+                continue
+            title = (
+                section.get("section_title")
+                or section.get("title")
+                or ""
+            )
+            section_number = section.get("section_number")
+            content = section.get("content") if isinstance(section.get("content"), list) else []
+
+            subsection_payload = {"title": title}
+            formula_idx = 1
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("type", "")).lower() != "formula":
+                    continue
+                latex = (item.get("latex") or item.get("content") or "").strip()
+                if not latex:
+                    continue
+                subsection_payload[f"formula{formula_idx}"] = latex
+                formula_idx += 1
+
+            normalized_sections.append(
+                {
+                    "title": f"{section_number} {title}".strip() if section_number else title,
+                    "subsections": [subsection_payload],
+                }
+            )
+        return {"sections": normalized_sections}
+
+    return {"sections": []}
+
 def _best_match(data, sec_title: str, sub_title: str, min_ratio: float = 0.55):
+    data = _normalize_sectioned_data(data)
     best_sec, best_sec_score = None, 0.0
     for sec in data.get("sections", []):
         s = difflib.SequenceMatcher(None, sec.get("title","").lower(), (sec_title or "").lower()).ratio()
@@ -1173,10 +1355,8 @@ def get_formula_reasons(sec, sub, formula_files, formula_data) -> str:
 def resolve_formula_mode1_path(fname: str, args) -> Path:
     """
     Extract formula index i from fname (like "formula_4.png"),
-    and generate the path:
-    <{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/{args.paper_name}-formula-i.png
+    and resolve it to the formula crop produced for this run.
     """ 
-
     stem = Path(fname).stem   
     match = re.search(r'(\d+)(?!.*\d)', stem) 
     # match = re.search(r'(?i)\bformula(?:[_\-\s]*)?(\d+)\b', stem)
@@ -1184,8 +1364,7 @@ def resolve_formula_mode1_path(fname: str, args) -> Path:
         return None
     
     i = match.group(1)
-    path_str = f"<{args.model_name_t}_{args.model_name_v}>_images_and_tables/{args.paper_name}/{args.paper_name}-formula-{i}.png"
-    return Path(path_str)
+    return formula_crop_path(args, i)
 
 import json
 from pathlib import Path
@@ -1297,7 +1476,8 @@ def _fill_bullets(
     bullets,
     lvl0_size=24,
     lvl1_size=24,
-    min_size_pt: float = 10.0,
+    font_name: str | None = None,
+    min_size_pt: float = 15.0,
     max_size_pt: float | None = None,
     target_min_fill: float = 0.46,
     target_max_fill: float = 0.82,
@@ -1317,12 +1497,14 @@ def _fill_bullets(
         p.text = (b.get("text") or "").strip()
         p.level = 0
         _set_paragraph_font_size(p, lvl0_size)
+        _set_paragraph_font_name(p, font_name)
         
         for s in (b.get("sub") or []):
             sp = tf.add_paragraph()
             sp.text = str(s).strip()
             sp.level = 1
             _set_paragraph_font_size(sp, lvl1_size)
+            _set_paragraph_font_name(sp, font_name)
     _enable_shrink_to_fit(tf)
     if shape is not None:
         _shrink_text_frame_to_fit(shape, tf, min_size_pt=min_size_pt)
@@ -1344,7 +1526,7 @@ def _stabilize_slide_text_shapes(slide) -> None:
         if not tf or not any(_paragraph_text(p).strip() for p in tf.paragraphs):
             continue
         name = (getattr(shape, "name", "") or "").lower()
-        min_size_pt = 12.0 if "title" in name else 10.0
+        min_size_pt = 12.0 if "title" in name else 15.0
         _shrink_text_frame_to_fit(shape, tf, min_size_pt=min_size_pt)
     _expand_sparse_slide_pictures(slide)
 from pptx.enum.shapes import PP_PLACEHOLDER
@@ -1370,7 +1552,7 @@ def _ph_by_idx(slide, idx:int):
             return ph
     return None
 
-def fill_T19_2Text(slide, slide_info, section_no_text):
+def fill_T19_2Text(slide, slide_info, section_no_text, *, title_font_name: str | None = None, body_font_name: str | None = None):
      
     print("slide_info:")
     print(slide_info)
@@ -1384,7 +1566,7 @@ def fill_T19_2Text(slide, slide_info, section_no_text):
     title_bar = _ph_by_idx(slide, 1)  or _ph_text_n(slide, 1)
 
      
-    section_title = slide_info.get("section") 
+    section_title = _normalize_slide_heading(slide_info.get("section") or "")
     
     title_bar.text = section_title
     tf = title_bar.text_frame
@@ -1420,23 +1602,25 @@ def fill_T19_2Text(slide, slide_info, section_no_text):
     right = cols[1] if len(cols) > 1 else {}
  
     if part_ph is not None and getattr(part_ph, "has_text_frame", False):
-        _set_shape_text_with_fit(part_ph, f"{section_no_text}", max_size_pt=28)
+        _set_shape_text_with_fit(part_ph, f"{section_no_text}", max_size_pt=28, font_name=title_font_name)
 
     if title_bar is not None and getattr(title_bar, "has_text_frame", False):
-        title_txt = slide_info.get("section", "") or slide_info.get("title", "")
-        _set_shape_text_with_fit(title_bar, title_txt, max_size_pt=_header_font_size(title_txt))
+        title_txt = _normalize_slide_heading(slide_info.get("section", "") or slide_info.get("title", ""))
+        _set_shape_text_with_fit(title_bar, title_txt, max_size_pt=_header_font_size(title_txt), font_name=title_font_name)
 
     if lt is not None and getattr(lt, "has_text_frame", False):
-        _set_shape_text_with_fit(lt, left.get("subsection", "") or left.get("title", "") or "", max_size_pt=22)
+        left_title = _normalize_slide_heading(left.get("subsection", "") or left.get("title", "") or "")
+        _set_shape_text_with_fit(lt, left_title, max_size_pt=22, font_name=title_font_name)
 
     if rt is not None and getattr(rt, "has_text_frame", False):
-        _set_shape_text_with_fit(rt, right.get("subsection", "") or right.get("title", "") or "", max_size_pt=22)
+        right_title = _normalize_slide_heading(right.get("subsection", "") or right.get("title", "") or "")
+        _set_shape_text_with_fit(rt, right_title, max_size_pt=22, font_name=title_font_name)
 
     if lb is not None and getattr(lb, "has_text_frame", False):
-        _fill_bullets(lb, left.get("bullets"))
+        _fill_bullets(lb, left.get("bullets"), font_name=body_font_name)
 
     if rb is not None and getattr(rb, "has_text_frame", False):
-        _fill_bullets(rb, right.get("bullets"))
+        _fill_bullets(rb, right.get("bullets"), font_name=body_font_name)
 
      
     missing = []
@@ -1475,24 +1659,38 @@ def generate_pptx_from_plan(
 ):
  
      
-    figs_json_path  =  f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_figures.json"
-    formula_json_path = f"contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_formula_match.json"
-    paper_outline_json = f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_raw_content.json' 
-    with open(paper_outline_json, "r", encoding="utf-8") as f: outline_json  = json.load(f)
-    with open(figs_json_path, encoding="utf-8") as f: figs_data   = json.load(f)
-    with open(formula_json_path, encoding="utf-8") as f: formula_data   = json.load(f)
+    figures_path = figures_json_path(args)
+    formula_path = formula_match_path(args)
+    outline_path = raw_content_path(args)
+    with open(outline_path, "r", encoding="utf-8") as f: outline_json  = json.load(f)
+    with open(figures_path, encoding="utf-8") as f: figs_data   = json.load(f)
+    with open(formula_path, encoding="utf-8") as f: formula_data   = json.load(f)
     
     variant_suffix = getattr(
         args,
         "output_variant_suffix",
         "_personalized" if getattr(args, "use_author_preferences", False) else "_baseline",
     )
-    plan_json = f'contents/{args.paper_name}/<{args.model_name_t}_{args.model_name_v}>_slide_plan{variant_suffix}.json'
+    plan_json = slide_plan_path(args, variant_suffix)
      
     made = pair_T1_to_T19(plan_json)   
     print(f"[plan] T1->T19 pairs made: {made}")
       
     plan: Dict = json.loads(Path(plan_json).read_text(encoding="utf-8"))
+
+    title_font_name = None
+    body_font_name = None
+    profile_path_value = getattr(args, "author_profile_path", None)
+    if profile_path_value:
+        try:
+            profile_payload = json.loads(Path(profile_path_value).read_text(encoding="utf-8"))
+            font_preferences = dict(profile_payload.get("font_preferences") or {})
+            raw_title_font = str(font_preferences.get("title_font_name") or "").strip()
+            raw_body_font = str(font_preferences.get("body_font_name") or "").strip()
+            title_font_name = raw_title_font or None
+            body_font_name = raw_body_font or None
+        except Exception as exc:
+            print(f"[font] failed to read font_preferences from profile: {exc}")
 
 
     title    = outline_json["metadata"]["title"]
@@ -1518,6 +1716,7 @@ def generate_pptx_from_plan(
         title,
         max_size_pt=34,
         min_size_pt=18,
+        font_name=title_font_name,
         alignment=PP_ALIGN.CENTER,
         vertical_anchor=MSO_ANCHOR.MIDDLE,
     )
@@ -1526,6 +1725,7 @@ def generate_pptx_from_plan(
         subtitle,
         max_size_pt=22,
         min_size_pt=14,
+        font_name=body_font_name,
         alignment=PP_ALIGN.CENTER,
         vertical_anchor=MSO_ANCHOR.MIDDLE,
     )
@@ -1545,10 +1745,11 @@ def generate_pptx_from_plan(
         sec = slide["section"]
         if sec not in seen:
             seen.add(sec)
-            unique_sections.append(sec)
+            unique_sections.append(_normalize_slide_heading(sec))
  
     contents_font_size = _contents_font_size(len(unique_sections))
     _populate_contents_frame(tf, unique_sections, contents_font_size)
+    _apply_text_frame_font_name(tf, body_font_name)
             
     # ---------- Body ----------
     current_section  = None
@@ -1567,14 +1768,16 @@ def generate_pptx_from_plan(
                 f"PART {section_counter:02d}",
                 max_size_pt=38,
                 min_size_pt=18,
+                font_name=title_font_name,
                 alignment=PP_ALIGN.CENTER,
                 vertical_anchor=MSO_ANCHOR.MIDDLE,
             )
             _set_shape_text_with_fit(
                 _placeholder_by_name(sec_slide, "Title 1"),
-                current_section,
+                _normalize_slide_heading(current_section),
                 max_size_pt=36,
                 min_size_pt=18,
+                font_name=title_font_name,
                 alignment=PP_ALIGN.CENTER,
                 vertical_anchor=MSO_ANCHOR.MIDDLE,
             )
@@ -1582,9 +1785,10 @@ def generate_pptx_from_plan(
         visuals = resolve_visual_paths(slide_info, args)
         layout_names = [layout.name for layout in prs.slide_layouts]
         template_id = str(slide_info["template_id"])
-        template_id = _fallback_text_only_template(template_id, slide_info)
+        template_id = _fallback_text_only_template(template_id, slide_info, visuals)
         if _should_use_top_visual_layout(slide_info, visuals):
             template_id = "T4_ImageTop"
+        template_id = _prefer_stacked_formula_template(template_id, slide_info, visuals)
         template_id = normalize_template_id(template_id, layout_names)
         template_id = _fallback_missing_template_id(template_id, slide_info, visuals, layout_names)
         slide_info["template_id"] = template_id
@@ -1602,13 +1806,21 @@ def generate_pptx_from_plan(
                         print(f"  Left: {shape.left}, Top: {shape.top}, Width: {shape.width}, Height: {shape.height}")
                         print(f"  Text: '{shape.text_frame.text.strip()}'")
     
-            fill_T19_2Text(slide, slide_info, section_no_text=f"{section_counter:02d}")
+            fill_T19_2Text(
+                slide,
+                slide_info,
+                section_no_text=f"{section_counter:02d}",
+                title_font_name=title_font_name,
+                body_font_name=body_font_name,
+            )
             continue
 
         part_ph, title_ph, body_ph = find_text_placeholders(slide)
   
-        _set_shape_text_with_fit(part_ph, f"{section_counter:02d}", max_size_pt=28)
-        _set_shape_text_with_fit(title_ph, slide_info["subsection"], max_size_pt=_header_font_size(slide_info["subsection"]))
+        subsection_name = slide_info.get("subsection") or slide_info.get("title") or slide_info.get("section") or ""
+        display_subsection = _normalize_slide_heading(subsection_name)
+        _set_shape_text_with_fit(part_ph, f"{section_counter:02d}", max_size_pt=28, font_name=title_font_name)
+        _set_shape_text_with_fit(title_ph, display_subsection, max_size_pt=_header_font_size(display_subsection), font_name=title_font_name)
   
    
         # bullets + sub-bullets
@@ -1626,17 +1838,19 @@ def generate_pptx_from_plan(
                 p = tf.paragraphs[0] if len(tf.paragraphs) == 1 and not tf.paragraphs[0].text else tf.add_paragraph()
                 p.text, p.level = bullet.get("text", ""), 0
                 _set_paragraph_font_size(p, lvl0_size)
+                _set_paragraph_font_name(p, body_font_name)
                 for sub in bullet.get("sub", []):
                     sp = tf.add_paragraph()
                     sp.text, sp.level = sub, 1
                     _set_paragraph_font_size(sp, lvl1_size)
+                    _set_paragraph_font_name(sp, body_font_name)
             _enable_shrink_to_fit(tf)
-            _shrink_text_frame_to_fit(body_ph, tf, min_size_pt=10.0)
+            _shrink_text_frame_to_fit(body_ph, tf, min_size_pt=15.0)
             has_visuals = bool(slide_info.get("images") or slide_info.get("tables") or slide_info.get("formulas"))
             _grow_text_frame_to_fill(
                 body_ph,
                 tf,
-                min_size_pt=10.0,
+                min_size_pt=15.0,
                 max_size_pt=30.0 if not has_visuals else 26.0,
                 target_min_fill=0.58 if not has_visuals else 0.46,
                 target_max_fill=0.86 if not has_visuals else 0.82,
@@ -1649,20 +1863,21 @@ def generate_pptx_from_plan(
 
         # ---------- note ----------
         notes_chunks = [] 
-        txt = get_content(slide_info["section"], slide_info["subsection"], outline_json)
+        section_name = slide_info.get("section", "")
+        txt = get_content(section_name, subsection_name, outline_json)
         if txt: notes_chunks.append(txt)
         if slide_info.get("images"):
-            img_r = get_image_reasons(slide_info["section"], slide_info["subsection"],
+            img_r = get_image_reasons(section_name, subsection_name,
                                       slide_info["images"], figs_data)
             notes_chunks.append(img_r)
         if slide_info.get("tables"):
-            tb_r = get_table_reasons(slide_info["section"], slide_info["subsection"],
+            tb_r = get_table_reasons(section_name, subsection_name,
                                      slide_info["tables"], figs_data)
             notes_chunks.append(tb_r)
         if slide_info.get("formulas"):
             fm_r = get_formula_reasons(
-                slide_info["section"],
-                slide_info["subsection"],
+                section_name,
+                subsection_name,
                 slide_info["formulas"],
                 formula_data  ,
                 )
@@ -1692,19 +1907,16 @@ def generate_pptx_from_plan(
     run.font.bold = True
     for slide in prs.slides:
         _stabilize_slide_text_shapes(slide)
-    output_pptx = (
-        f'contents/{args.paper_name}/'
-        f'{args.model_name_t}_{args.model_name_v}_output_slides{variant_suffix}.pptx'
-    ) 
+    output_pptx = output_pptx_path(args, variant_suffix)
+    output_pptx.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_pptx))
     delete_slide(prs, 0)    
     prs.save(str(output_pptx))
     
-    prefix = f"<{args.model_name_t}_{args.model_name_v}>_images_and_tables"
-    base_dir = Path(prefix) / args.paper_name
+    base_dir = paper_image_tables_dir(args)
     target_name = f"{args.paper_name}-with-image-refs_artifacts"
     
-    artifacts_dir = base_dir / target_name
+    artifacts_dir = referenced_artifacts_dir(args)
     
     if not artifacts_dir.exists():
         hits = list(base_dir.glob(f"**/{target_name}"))
@@ -1714,35 +1926,52 @@ def generate_pptx_from_plan(
     img_candidates = sorted(artifacts_dir.glob("image_*.png"))
     theme_imgs = [str(p) for p in img_candidates[:2]]
 
+    theme_hex = None
+    base_hex = None
 
-    if len(theme_imgs) < 1:
-        print(f"[warn] No image_*.png found under: {artifacts_dir}. Skip theming.")
-    else:
- 
-        theme_hex, base_hex = pick_theme_color(
-            images=theme_imgs,
-            prefer_dark=True,
-            min_v=0.10,
-            max_v=0.99,
-            return_base_hex=True,
-        )
-        print("[theme] base_hex :", base_hex)
-        print("[theme] theme_hex:", theme_hex)
-        print("[theme] imgs:", theme_imgs)
+    profile_path_value = getattr(args, "author_profile_path", None)
+    if profile_path_value:
+        try:
+            profile_payload = json.loads(Path(profile_path_value).read_text(encoding="utf-8"))
+            color_preferences = dict(profile_payload.get("color_preferences") or {})
+            raw_theme_hex = color_preferences.get("target_theme_hex")
+            raw_base_hex = color_preferences.get("target_base_hex")
+            if raw_theme_hex:
+                theme_hex = str(raw_theme_hex).strip()
+                base_hex = str(raw_base_hex or raw_theme_hex).strip()
+                print("[theme] using author profile color preference")
+                print("[theme] base_hex :", base_hex)
+                print("[theme] theme_hex:", theme_hex)
+        except Exception as exc:
+            print(f"[theme] failed to read color_preferences from profile: {exc}")
 
-        
-        output_pptx_path = Path(output_pptx)
-        themed_pptx_path = output_pptx_path.with_name(output_pptx_path.stem + "_themed" + output_pptx_path.suffix)
+    if theme_hex is None:
+        if len(theme_imgs) < 1:
+            print(f"[warn] No image_*.png found under: {artifacts_dir}. Skip theming.")
+        else:
+            theme_hex, base_hex = pick_theme_color(
+                images=theme_imgs,
+                prefer_dark=True,
+                min_v=0.10,
+                max_v=0.99,
+                return_base_hex=True,
+            )
+            print("[theme] base_hex :", base_hex)
+            print("[theme] theme_hex:", theme_hex)
+            print("[theme] imgs:", theme_imgs)
+
+    if theme_hex is not None:
+        themed_pptx = themed_output_pptx_path(args, variant_suffix)
         print("colored path")
-       
+
         set_one_theme_color(
-            pptx_in=str(output_pptx_path),
-            pptx_out=str(themed_pptx_path),
+            pptx_in=str(output_pptx),
+            pptx_out=str(themed_pptx),
             color_hex=theme_hex,
-            target_key="dk2",    
+            target_key="dk2",
         )
 
-        print(f"[ok] themed pptx saved: {themed_pptx_path}")
+        print(f"[ok] themed pptx saved: {themed_pptx}")
 
 
 if __name__ == "__main__":
@@ -1751,8 +1980,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fill PPTX from slides plan.")
     parser.add_argument(
         "--plan",  
-        default="SlideGen/contents/STEP_A_General_and_Scalable_Framework_for_Solving_Video_Inverse_Problems/<4o_4o>_slide_plan.json",  
-        help="slides_plan.json"
+        default="",
+        help="Legacy argument; the renderer now derives the plan path from paper/model/output_dir."
         )
     parser.add_argument(
         "--paper_name",  
@@ -1767,6 +1996,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--out", 
         default="output.pptx" 
+        )
+    parser.add_argument(
+        "--output_dir",
+        default=".",
+        help="Base directory for pipeline outputs."
+        )
+    parser.add_argument(
+        "--output_variant_suffix",
+        default="_baseline",
+        help="Variant suffix used to find the slide plan and name the output deck."
         )
     parser.add_argument(
         "--model_name_t", 
@@ -1787,7 +2026,6 @@ if __name__ == "__main__":
             print(f"  - {s['name']} ({s['type']})")
 
  
-
-    generate_pptx_from_plan(args.plan, args.template, args.out)
+    generate_pptx_from_plan(args, args.template)
      
-    print(f" Saved to {args.out}")
+    print(f" Saved to {output_pptx_path(args, args.output_variant_suffix)}")

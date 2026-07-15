@@ -14,14 +14,9 @@ from typing import Any
 METRIC_KEYS = [
     "core_coverage_topic_iou",
     "geometry_aware_density_gad_geom",
-    "slidetailor_aesthetic_quality_deck_score",
-    "slidetailor_content_informativeness_deck_score",
-]
-
-PREFERENCE_DEPENDENT_METRIC_KEYS = [
-    "slidetailor_structure_similarity_coverage_iou",
-    "slidetailor_structure_similarity_flow_ngld",
-    "slidetailor_structure_similarity_content_structure_similarity",
+    "visual_appeal_deck_score",
+    "logical_flow_deck_score",
+    "paper_faithfulness_deck_score",
 ]
 
 
@@ -42,16 +37,12 @@ def to_pct(value: float) -> float:
 
 def summarize_bundle_eval_root(
     root_dir: Path,
-    *,
-    include_preference_dependent_slidetailor: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     paths = sorted(root_dir.glob("*/bundle_eval/*/summary.json"))
     if not paths:
         raise SystemExit(f"No bundle-eval summary.json files found under {root_dir}")
 
     metric_keys = list(METRIC_KEYS)
-    if include_preference_dependent_slidetailor:
-        metric_keys.extend(PREFERENCE_DEPENDENT_METRIC_KEYS)
 
     rows: list[dict[str, Any]] = []
     skipped_counts: dict[str, int] = {}
@@ -72,12 +63,9 @@ def summarize_bundle_eval_root(
 
         row["core_coverage_topic_iou"] = safe_float(((metrics.get("core_coverage") or {}).get("topic_iou")))
         row["geometry_aware_density_gad_geom"] = safe_float(((metrics.get("geometry_aware_density") or {}).get("gad_geom")))
-        row["slidetailor_aesthetic_quality_deck_score"] = safe_float(((metrics.get("slidetailor_aesthetic_quality") or {}).get("deck_score")))
-        row["slidetailor_content_informativeness_deck_score"] = safe_float(((metrics.get("slidetailor_content_informativeness") or {}).get("deck_score")))
-        row["slidetailor_structure_similarity_coverage_iou"] = safe_float(((metrics.get("slidetailor_structure_similarity") or {}).get("coverage_iou")))
-        row["slidetailor_structure_similarity_flow_ngld"] = safe_float(((metrics.get("slidetailor_structure_similarity") or {}).get("flow_ngld")))
-        row["slidetailor_structure_similarity_content_structure_similarity"] = safe_float(((metrics.get("slidetailor_structure_similarity") or {}).get("content_structure_similarity")))
-
+        row["visual_appeal_deck_score"] = safe_float(((metrics.get("visual_appeal") or {}).get("deck_score")))
+        row["logical_flow_deck_score"] = safe_float(((metrics.get("logical_flow") or {}).get("deck_score")))
+        row["paper_faithfulness_deck_score"] = safe_float(((metrics.get("paper_faithfulness") or {}).get("deck_score")))
         for key, reason in skipped.items():
             skip_key = f"{variant}:{key}:{reason}"
             skipped_counts[skip_key] = skipped_counts.get(skip_key, 0) + 1
@@ -142,21 +130,13 @@ def main() -> None:
     parser.add_argument("--root-dir", type=Path, required=True, help="Root experiment dir containing per-paper bundle_eval outputs.")
     parser.add_argument("--output-json", type=Path, default=None, help="Optional output JSON summary path.")
     parser.add_argument("--output-csv", type=Path, default=None, help="Optional output CSV detail path.")
-    parser.add_argument(
-        "--include-preference-dependent-slidetailor",
-        action="store_true",
-        help="Include preference-based SlideTailor metrics in the aggregate summary.",
-    )
     args = parser.parse_args()
 
     root_dir = args.root_dir.resolve()
     output_json = args.output_json or (root_dir / "BUNDLE_EVAL_SUMMARY.json")
     output_csv = args.output_csv or (root_dir / "BUNDLE_EVAL_DETAILS.csv")
 
-    aggregate, rows = summarize_bundle_eval_root(
-        root_dir,
-        include_preference_dependent_slidetailor=args.include_preference_dependent_slidetailor,
-    )
+    aggregate, rows = summarize_bundle_eval_root(root_dir)
 
     output_json.write_text(json.dumps(aggregate, indent=2, ensure_ascii=False), encoding="utf-8")
     write_csv(output_csv, rows, aggregate["included_metric_keys"])

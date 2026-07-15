@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate clean non-personalized baselines for a pair-guideline manifest."""
+"""Generate clean non-personalized baselines for a batch manifest."""
 
 from __future__ import annotations
 
@@ -83,8 +83,8 @@ def main() -> None:
     parser.add_argument(
         "--manifest",
         type=Path,
-        default=PROJECT_ROOT / "Capstone" / "batch_runs" / "pair_guideline_runs" / "pair_guided_12_run" / "manifest.json",
-        help="Manifest JSON from the pair-guided batch run.",
+        default=PROJECT_ROOT / "Capstone" / "batch_runs" / "manifest.json",
+        help="Manifest JSON describing the selected papers for the batch run.",
     )
     parser.add_argument("--include-existing", action="store_true", help="Regenerate even if clean baseline outputs already exist.")
     parser.add_argument("--dry-run", action="store_true")

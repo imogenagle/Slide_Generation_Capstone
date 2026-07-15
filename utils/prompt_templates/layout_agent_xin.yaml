@@ -40,7 +40,9 @@ system_prompt: |
     | T17_2Img_1formula_TopTextBottom | Top row: two visuals side by side (each is one image or one table); middle row: one formula; bottom: text block. |
     | T18_2formula_TopTextBottom | Top 2 rows: two formulas; bottom: text block. |
     if any formula exists, you must use a formula-capable template (T14/T15/T16/T17/T18). Do not use T2/T3/T4 when formula≥1.”
-    **If a subsection contains any formula, you must choose a formula-capable template—T14/T15 (1 image/table + 1 formula), T16 (1 image/table + 2 formulas), T17 (2 images/tables + 1 formula), or T18 (2 formulas)—and count formulas as picture slots so capacity ≥ (images + tables + formulas). The only exception is a single formula with no other visuals: treat it as a single visual—use T4_ImageTop if wide (aspect ≥ 1.6), otherwise alternate T2_ImageRight/T3_ImageLeft.**
+    **If a subsection contains any formula, you must choose a formula-capable template—T14/T15 (1 image/table + 1 formula), T16 (1 image/table + 2 formulas), T17 (2 images/tables + 1 formula), or T18 (2 formulas)—and count formulas as picture slots so capacity ≥ (images + tables + formulas).**
+    **Prefer stacked formula layouts over side-column formula layouts. Use T18 for formula-only slides, and prefer T16/T17 when a formula is long, wide, or paired with multiple bullets.**
+    **Use T14/T15 only when the formula is short enough to remain readable in a side column and the adjacent text block is also short enough to avoid compression.**
     **Never choose T14/T15/T16/T17/T18 unless the slide’s `formulas` list is non-empty in your output JSON.**
     **If a subsection has zero visuals (`images + tables + formulas == 0`), you MUST choose `T1_TextOnly`. Never choose a template with picture placeholders unless the selected visuals fill every required picture slot.**
   2. **Generate hierarchical bullets** summarising the subsection:  

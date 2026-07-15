@@ -538,6 +538,54 @@ def retrieval_numeric_eval_command(
     ]
 
 
+def retrieval_section_eval_command(
+    *,
+    profile_path: Path,
+    baseline_plan: Path,
+    personalized_plan: Path,
+    output_path: Path,
+    judge_model: str,
+) -> list[str]:
+    return [
+        sys.executable,
+        "Capstone/evaluate_retrieval_alignment_sections_llm.py",
+        "--profile",
+        str(profile_path),
+        "--baseline-plan",
+        str(baseline_plan),
+        "--personalized-plan",
+        str(personalized_plan),
+        "--model",
+        judge_model,
+        "--output",
+        str(output_path),
+    ]
+
+
+def retrieval_all_eval_command(
+    *,
+    profile_path: Path,
+    baseline_plan: Path,
+    personalized_plan: Path,
+    output_path: Path,
+    judge_model: str,
+) -> list[str]:
+    return [
+        sys.executable,
+        "Capstone/evaluate_retrieval_alignment_all.py",
+        "--profile",
+        str(profile_path),
+        "--baseline-plan",
+        str(baseline_plan),
+        "--personalized-plan",
+        str(personalized_plan),
+        "--model",
+        judge_model,
+        "--output",
+        str(output_path),
+    ]
+
+
 def resolve_experiment_dir(experiment_name: str) -> Path:
     return DEFAULT_EXPERIMENT_ROOT / experiment_name
 
@@ -611,6 +659,16 @@ def main() -> None:
         "--run-retrieval-numeric-eval",
         action="store_true",
         help="Run the retrieval-only numeric evaluator after generation. Intended for personalization-mode retrieval.",
+    )
+    parser.add_argument(
+        "--run-retrieval-section-eval",
+        action="store_true",
+        help="Run the retrieval-only LLM section evaluator after generation. Intended for personalization-mode retrieval.",
+    )
+    parser.add_argument(
+        "--run-retrieval-all-eval",
+        action="store_true",
+        help="Run the combined retrieval evaluator (numeric + qualitative section) after generation, saving one JSON per paper.",
     )
     parser.add_argument(
         "--include-preference-dependent-slidetailor",
@@ -881,6 +939,44 @@ def main() -> None:
                     dry_run=args.dry_run,
                 )
                 paper_summary["statuses"]["retrieval_numeric_eval"] = "requested"
+
+            if args.run_retrieval_section_eval:
+                if args.personalization_mode != "retrieval":
+                    raise RuntimeError("--run-retrieval-section-eval requires --personalization-mode retrieval")
+                if not author_id or profile_path is None:
+                    raise RuntimeError(f"Missing retrieval profile context for retrieval section eval: {paper_id}")
+                output_path = experiment_dir / "retrieval_section_eval" / f"{paper_id.replace(':', '_')}.json"
+                run_command(
+                    retrieval_section_eval_command(
+                        profile_path=profile_path,
+                        baseline_plan=baseline_plan,
+                        personalized_plan=personalized_plan,
+                        output_path=output_path,
+                        judge_model=args.judge_model,
+                    ),
+                    cwd=PROJECT_ROOT,
+                    dry_run=args.dry_run,
+                )
+                paper_summary["statuses"]["retrieval_section_eval"] = "requested"
+
+            if args.run_retrieval_all_eval:
+                if args.personalization_mode != "retrieval":
+                    raise RuntimeError("--run-retrieval-all-eval requires --personalization-mode retrieval")
+                if not author_id or profile_path is None:
+                    raise RuntimeError(f"Missing retrieval profile context for retrieval combined eval: {paper_id}")
+                output_path = experiment_dir / "retrieval_eval" / f"{paper_id.replace(':', '_')}.json"
+                run_command(
+                    retrieval_all_eval_command(
+                        profile_path=profile_path,
+                        baseline_plan=baseline_plan,
+                        personalized_plan=personalized_plan,
+                        output_path=output_path,
+                        judge_model=args.judge_model,
+                    ),
+                    cwd=PROJECT_ROOT,
+                    dry_run=args.dry_run,
+                )
+                paper_summary["statuses"]["retrieval_all_eval"] = "requested"
 
             paper_summary["status"] = "ok"
         except subprocess.CalledProcessError as exc:

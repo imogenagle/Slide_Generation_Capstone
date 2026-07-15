@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from openai import BadRequestError
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
@@ -379,6 +380,21 @@ def create_chat_completion(client: Any, *, resolved_model_name: str, messages: l
     return extract_json_object(raw_text)
 
 
+def is_content_policy_violation(exc: Exception) -> bool:
+    if not isinstance(exc, BadRequestError):
+        return False
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error") or {}
+        code = str(error.get("code") or "").strip().lower()
+        message = str(error.get("message") or "").strip().lower()
+        if code == "content_policy_violation":
+            return True
+        if "content safety" in message:
+            return True
+    return "content_policy_violation" in str(exc).lower()
+
+
 def normalize_topics_with_llm(
     *,
     client: Any,
@@ -530,14 +546,47 @@ Return exactly this JSON schema:
             }
         )
 
-    result = create_chat_completion(
-        client,
-        resolved_model_name=resolved_model_name,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": content},
-        ],
-    )
+    try:
+        result = create_chat_completion(
+            client,
+            resolved_model_name=resolved_model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content},
+            ],
+        )
+    except Exception as exc:
+        if is_content_policy_violation(exc):
+            return {
+                "paper_id": paper_id,
+                "title": title,
+                "reference_topics": [],
+                "generated_topics": [],
+                "matched_topics": [],
+                "matched_topic_pairs": [],
+                "reference_only_topics": [],
+                "generated_only_topics": [],
+                "reference_topic_count": 0,
+                "generated_topic_count": 0,
+                "topic_intersection_count": 0,
+                "topic_union_count": 0,
+                "topic_iou": None,
+                "coverage_ratio": None,
+                "missing_from_generated": [],
+                "difference_summary": {
+                    "missing_content": [],
+                    "compressed_content": [],
+                    "overemphasized_or_extra_content": [],
+                    "structure_changes": [],
+                    "overall_summary": "",
+                },
+                "notes": "Skipped core coverage because one or more sampled original slide images triggered the model content-safety filter.",
+                "sampled_original_slides": [path.name for path in sampled_slide_paths],
+                "generated_pptx": str(generated_pptx),
+                "skipped": True,
+                "skip_reason": "content_policy_violation",
+            }
+        raise
 
     raw_reference_topics = sanitize_topic_list(result.get("reference_topics"))
     raw_generated_topics = sanitize_topic_list(result.get("generated_topics"))
@@ -566,7 +615,7 @@ def main() -> None:
     parser.add_argument("--title", required=True, help="Paper title")
     parser.add_argument("--original-slide-dir", type=Path, required=True, help="Directory of original slide images")
     parser.add_argument("--generated-pptx", type=Path, required=True, help="Generated PPTX path")
-    parser.add_argument("--model", default="4o-mini", help="Model or Azure deployment alias")
+    parser.add_argument("--model", default="gpt-5.4-nano", help="Model or Azure deployment alias")
     parser.add_argument(
         "--max-original-slides",
         type=int,

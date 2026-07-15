@@ -7,7 +7,7 @@ from SlidesAgent.gen_speaker import gen_speaker_script
 from SlidesAgent.layout_agent_xin import generate_slide_plan
 from SlidesAgent.layout_filler import generate_pptx_from_plan
 from Capstone.preference_distill import distill_author_profile
-from utils.ablation_utils import no_tree_get_layout 
+from utils.ablation_utils import no_tree_get_layout
 from math import ceil
 import sys
      
@@ -214,6 +214,8 @@ if __name__ == '__main__':
                         help='Maximum number of prior decks to sample for preference distillation.')
     parser.add_argument('--force_refresh_preferences', action='store_true',
                         help='Regenerate the author profile even if a cached profile JSON already exists.')
+    parser.add_argument('--template_path', type=str, default=None,
+                        help='Path to a user-supplied PPTX template. SlideGen runs as normal, then the layout binder maps the plan onto this template. If omitted, uses the default slides3_template.pptx via generate_pptx_from_plan.')
     args = parser.parse_args()
 
     if args.preference_model is None:
@@ -387,5 +389,12 @@ if __name__ == '__main__':
     with open(detail_log_file, 'w') as f:
         json.dump(detail_log, f, indent=4)
     print("✅ all files exist……")
-    generate_pptx_from_plan(args,3)
+    if args.template_path:
+        from SlidesAgent.layout_binder import bind_and_render
+        print(f"[render] --template_path={args.template_path} provided; running layout binder + user-template renderer.")
+        out_pptx = bind_and_render(args, args.template_path)
+        if out_pptx is None:
+            sys.exit(1)
+    else:
+        generate_pptx_from_plan(args, 3)
  

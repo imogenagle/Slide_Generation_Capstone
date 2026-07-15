@@ -136,7 +136,7 @@ def evaluate_structure_similarity(
         "generated_pptx": str(generated_pptx),
         "coverage_iou": coverage_iou(generated_flow, reference_flow),
         "flow_ngld": flow_ngld(generated_flow, reference_flow),
-        "content_structure_similarity": _normalize_score(judged.get("score", 0.0)),
+        "content_structure_similarity": _normalize_score(judged.get("score", 0.0), scale="one_to_five"),
         "content_structure_reason": str(judged.get("reason", "")).strip(),
         "categories": categories,
         "generated_outline": generated_outline,
