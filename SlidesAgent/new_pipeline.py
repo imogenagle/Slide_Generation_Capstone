@@ -1,520 +1,551 @@
-from math import ceil
-import sys
- 
-from pathlib import Path 
-from dotenv import load_dotenv
- 
-import argparse
-import csv
+import streamlit as st
 import json
+import copy
+import difflib
 import os
 import time
-from SlidesAgent.output_paths import (
-    detail_log_path,
-    figures_json_path,
-    formula_match_path,
-    images_filtered_path,
-    log_json_path,
-    output_pptx_path,
-    paper_output_dir,
-    raw_content_path,
-    tables_filtered_path,
+
+st.set_page_config(
+    page_title="SlideGen · Personalized",
+    page_icon="🎯",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
- 
-# Create a theme profile here
-theme_title_text_color = (255,255,0)
-theme_title_fill_color = (255,255,0)
-theme = {
-    'panel_visible': True,
-    'textbox_visible': False,
-    'figure_visible': False,
-    'panel_theme': {
-        'color': theme_title_fill_color,
-        'thickness': 5,
-        'line_style': 'solid',
-    },
-    'textbox_theme': None,
-    'figure_theme': None,
+
+# ── Custom CSS ─────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+.main { background-color: #0e0e0f; color: #f0ede8; }
+.block-container { padding: 2.5rem 3rem 4rem 3rem; max-width: 1200px; }
+
+.site-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: 2.6rem;
+    color: #f0ede8;
+    letter-spacing: -0.02em;
+    margin: 0;
+    line-height: 1;
+}
+
+.site-badge {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #c8b89a;
+    background: rgba(200, 184, 154, 0.12);
+    border: 1px solid rgba(200, 184, 154, 0.25);
+    padding: 0.2rem 0.6rem;
+    border-radius: 2px;
+    margin-left: 0.75rem;
+    position: relative;
+    top: -0.4rem;
+}
+
+.section-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #c8b89a;
+    margin-bottom: 0.75rem;
+    display: block;
+}
+
+.card {
+    background: #161617;
+    border: 1px solid #262626;
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.25rem;
+}
+
+.card-accent { border-left: 3px solid #c8b89a; }
+
+.bullet-item {
+    font-size: 0.875rem;
+    color: #a09d99;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid #1e1e1e;
+    line-height: 1.5;
+}
+
+.bullet-item:last-child { border-bottom: none; }
+
+.sub-bullet {
+    font-size: 0.8rem;
+    color: #6b6860;
+    padding: 0.2rem 0 0.2rem 1.25rem;
+    line-height: 1.4;
+}
+
+.slide-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #6b6860;
+    margin-bottom: 0.4rem;
+}
+
+.status-ok {
+    color: #7a9e8a;
+    font-size: 0.8rem;
+    font-family: 'DM Mono', monospace;
+}
+
+.thin-divider {
+    border: none;
+    border-top: 1px solid #1e1e1e;
+    margin: 2rem 0;
+}
+
+.col-header {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #6b6860;
+    margin-bottom: 0.75rem;
+}
+
+.helper-text {
+    font-size: 0.8rem;
+    color: #6b6860;
+    line-height: 1.5;
+    margin-bottom: 0.5rem;
+}
+
+.placeholder-note {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    color: #3d3d3d;
+    letter-spacing: 0.08em;
+}
+
+/* Streamlit overrides */
+.stTextInput > div > div > input {
+    background: #161617 !important;
+    border: 1px solid #262626 !important;
+    border-radius: 6px !important;
+    color: #f0ede8 !important;
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.85rem !important;
+}
+.stTextInput > div > div > input:focus {
+    border-color: #c8b89a !important;
+    box-shadow: 0 0 0 1px rgba(200, 184, 154, 0.3) !important;
+}
+.stTextArea > div > div > textarea {
+    background: #161617 !important;
+    border: 1px solid #262626 !important;
+    border-radius: 6px !important;
+    color: #f0ede8 !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.85rem !important;
+}
+.stFileUploader {
+    background: #161617 !important;
+    border: 1px dashed #262626 !important;
+    border-radius: 8px !important;
+}
+.stButton > button {
+    background: #c8b89a !important;
+    color: #0e0e0f !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.75rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    padding: 0.6rem 1.5rem !important;
+    transition: all 0.15s ease !important;
+}
+.stButton > button:hover {
+    background: #d4c6ad !important;
+    transform: translateY(-1px) !important;
+}
+.stSelectbox > div > div {
+    background: #161617 !important;
+    border: 1px solid #262626 !important;
+    color: #f0ede8 !important;
+}
+.stTabs [data-baseweb="tab-list"] {
+    background: transparent !important;
+    border-bottom: 1px solid #262626 !important;
+    gap: 0 !important;
+}
+.stTabs [data-baseweb="tab"] {
+    font-family: 'DM Mono', monospace !important;
+    font-size: 0.7rem !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+    color: #6b6860 !important;
+    background: transparent !important;
+    border: none !important;
+    padding: 0.75rem 1.25rem !important;
+}
+.stTabs [aria-selected="true"] {
+    color: #c8b89a !important;
+    border-bottom: 2px solid #c8b89a !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def find_slide(slides, section, subsection):
+    best_score = 0.0
+    best_idx = None
+    for i, slide in enumerate(slides):
+        sec_score = difflib.SequenceMatcher(
+            None, slide["section"].lower(), section.lower()
+        ).ratio()
+        sub_score = difflib.SequenceMatcher(
+            None, slide["subsection"].lower(), subsection.lower()
+        ).ratio()
+        combined = (sec_score + sub_score) / 2
+        if combined > best_score:
+            best_score = combined
+            best_idx = i
+    if best_idx is not None and best_score >= 0.55:
+        return best_idx, slides[best_idx]
+    return None, None
+
+
+def revise_bullets(slide, instruction):
+    from openai import AzureOpenAI
+    client = AzureOpenAI(
+        api_key=os.environ.get("AZURE_OPENAI_API_KEY", ""),
+        azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+        api_version="2024-02-15-preview",
+    )
+
+    system_prompt = """You are a slide revision assistant.
+You will receive a slide's current bullet points and a user instruction.
+Your ONLY task: return a revised bullets array as valid JSON.
+Each bullet must follow this exact schema:
+[{"text": "<string>", "sub": ["<string>", ...]}, ...]
+Rules:
+- Keep bullets factually faithful to the original content
+- Apply the instruction to tone, depth, length, or structure
+- Return ONLY the JSON array, no explanation, no markdown fences
+- Top-level bullets: max 20 words
+- Sub-bullets: max 25 words
+- Max 6 top-level bullets"""
+
+    user_prompt = f"""Current bullets:
+{json.dumps(slide["bullets"], indent=2)}
+
+Slide context:
+Section: {slide["section"]}
+Subsection: {slide["subsection"]}
+
+User instruction: {instruction}
+
+Return the revised bullets JSON array only."""
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.3,
+        max_tokens=800,
+    )
+
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw.strip())
+
+
+def render_bullets(bullets):
+    for b in bullets:
+        st.markdown(
+            f'<div class="bullet-item">• {b["text"]}</div>',
+            unsafe_allow_html=True
+        )
+        for s in b.get("sub", []):
+            st.markdown(
+                f'<div class="sub-bullet">↳ {s}</div>',
+                unsafe_allow_html=True
+            )
+
+
+# ── Sample plan (sandbox) ──────────────────────────────────────────────────────
+SAMPLE_PLAN = {
+    "slides": [
+        {
+            "section": "Motivation and Problem Statement",
+            "subsection": "Importance of Constituency Parsing",
+            "template_id": "T2_ImageRight",
+            "bullets": [
+                {"text": "Constituency parsing is fundamental in natural language processing applications.", "sub": []},
+                {"text": "Supports relation extraction, paraphrase detection, natural language inference, and machine translation.", "sub": []},
+                {"text": "Fast and accurate parsing remains a long-standing challenge.", "sub": []}
+            ],
+            "images": ["image_1.png"], "tables": [], "formulas": []
+        },
+        {
+            "section": "Motivation and Problem Statement",
+            "subsection": "Limitations of Existing Methods",
+            "template_id": "T1_TextOnly",
+            "bullets": [
+                {"text": "Transition-based models suffer from compounding errors due to sequential local decisions.", "sub": []},
+                {"text": "Chart-based models have high computational costs from complex structured inference.", "sub": []},
+                {"text": "These limitations motivate the need for a more efficient and robust parsing approach.", "sub": []}
+            ],
+            "images": [], "tables": [], "formulas": []
+        },
+        {
+            "section": "Empirical Evaluation and Results",
+            "subsection": "Performance on Penn Treebank",
+            "template_id": "T4_ImageTop",
+            "bullets": [
+                {"text": "Achieves labeled F1 score of 91.8 on Penn Treebank test set.", "sub": []},
+                {"text": "Competitive with or surpasses recent single-model discriminative parsers.", "sub": []},
+                {"text": "Uses standard splits and preprocessing; POS tags predicted externally.", "sub": []}
+            ],
+            "images": [], "tables": ["table_2.png"], "formulas": []
+        },
+        {
+            "section": "Conclusions and Implications",
+            "subsection": "Summary of Contributions",
+            "template_id": "T1_TextOnly",
+            "bullets": [
+                {"text": "Introduces a fully parallel constituency parsing method based on syntactic distances.", "sub": []},
+                {"text": "Achieves competitive accuracy with faster parsing speeds and simpler training.", "sub": []},
+                {"text": "Outperforms existing methods in efficiency and robustness.", "sub": []}
+            ],
+            "images": [], "tables": [], "formulas": []
+        }
+    ]
 }
 
 
-def output_key_from_paper_id(paper_id: str | None) -> str | None:
-    if not paper_id:
-        return None
-    key = str(paper_id).strip().replace(":", "_")
-    key = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in key)
-    key = key.strip("_")
-    return key or None
+# ── Session state ──────────────────────────────────────────────────────────────
+if "plan" not in st.session_state:
+    st.session_state["plan"] = copy.deepcopy(SAMPLE_PLAN)
+if "deck_generated" not in st.session_state:
+    st.session_state["deck_generated"] = False
+if "revised_bullets" not in st.session_state:
+    st.session_state["revised_bullets"] = None
+if "original_bullets_snapshot" not in st.session_state:
+    st.session_state["original_bullets_snapshot"] = None
 
 
-def infer_output_key_from_paper_path(paper_path: str) -> str | None:
-    path = Path(paper_path)
-    parts = list(path.parts)
+# ── Header ─────────────────────────────────────────────────────────────────────
+st.markdown("""
+<h1 class="site-title">
+    [Project Name] <span class="site-badge">Personalized Slide Generation</span>
+</h1>
+<br>
+""", unsafe_allow_html=True)
 
-    # Common dataset layout:
-    # .../<split>/<record_id>/paper.pdf
-    if len(parts) >= 3:
-        record_id = parts[-2].strip()
-        split = parts[-3].strip()
-        if record_id.isdigit() and split:
-            split_key = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in split)
-            return f"{split_key}_{record_id}"
-
-    stem = path.stem.replace(" ", "_")
-    if stem.lower() == "paper" and len(parts) >= 2:
-        record_id = parts[-2].strip()
-        if record_id:
-            return record_id
-    return stem or None
+# ── Tabs ───────────────────────────────────────────────────────────────────────
+tab_generate, tab_revise = st.tabs(["Generate", "Revise"])
 
 
-def append_outline_mode_suffix(paper_name: str, outline_mode: str) -> str:
-    base = paper_name.strip().replace(" ", "_")
-    if base.endswith("_high_level") or base.endswith("_technical"):
-        return base
-    return f"{base}_{outline_mode}"
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 1 — GENERATE
+# ════════════════════════════════════════════════════════════════════════════════
+with tab_generate:
+    col_left, col_right = st.columns([1, 1.6], gap="large")
 
+    # ── Left column ───────────────────────────────────────────────────────────
+    with col_left:
+        st.markdown('<span class="section-label">Paper</span>', unsafe_allow_html=True)
+        uploaded_file = st.file_uploader(
+            "Upload PDF",
+            type=["pdf"],
+            label_visibility="collapsed"
+        )
+        if uploaded_file:
+            st.markdown(
+                f'<div class="status-ok">✓ {uploaded_file.name}</div>',
+                unsafe_allow_html=True
+            )
 
-def append_output_folder_suffix(paper_name: str, folder_suffix: str | None) -> str:
-    base = paper_name.strip().replace(" ", "_")
-    if not folder_suffix or base.endswith(folder_suffix):
-        return base
-    return f"{base}{folder_suffix}"
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<span class="section-label">Outline Mode</span>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="helper-text">High Level produces a compact narrative deck. Technical preserves the paper\'s section structure closely.</p>',
+            unsafe_allow_html=True
+        )
+        outline_mode = st.selectbox(
+            "Outline Mode",
+            ["high_level", "technical"],
+            format_func=lambda x: "High Level" if x == "high_level" else "Technical",
+            label_visibility="collapsed"
+        )
 
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            '<span class="section-label">Pre-Generation Instructions <span style="color:#3d3d3d">(optional)</span></span>',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            '<p class="helper-text">Shape the whole deck before it is generated. Applied at generation time.</p>',
+            unsafe_allow_html=True
+        )
+        pre_gen_instructions = st.text_area(
+            "Pre-generation instructions",
+            placeholder="e.g. Keep it under 10 slides, focus on the results section, make it highly technical...",
+            label_visibility="collapsed",
+            height=100,
+        )
 
-def find_target_paper_id(paper_path: str) -> str | None:
-    papers_csv = Path("Capstone/author_tables/papers.csv")
-    if not papers_csv.exists():
-        return None
+    # ── Right column ──────────────────────────────────────────────────────────
+    with col_right:
+        st.markdown('<span class="section-label">About This Tool</span>', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="card">
+            <p class="helper-text" style="margin-bottom:0.75rem;">
+                This system generates a personalized slide deck from your paper,
+                conditioned on your presentation history and any instructions you provide.
+            </p>
+            <p class="helper-text" style="margin-bottom:0.75rem;">
+                After generation, use the <strong style="color:#c8b89a">Revise</strong> tab
+                to refine individual slides with free-form instructions.
+            </p>
+            <p class="placeholder-note">↳ Pipeline connection coming soon</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-    target_candidates = set()
-    raw_target = Path(paper_path)
-    target_candidates.add(str(raw_target))
-    try:
-        target_candidates.add(str(raw_target.resolve()))
-    except Exception:
-        pass
-    try:
-        target_candidates.add(str((Path.cwd() / raw_target).resolve()))
-    except Exception:
-        pass
+        st.markdown("<br>", unsafe_allow_html=True)
+        generate_btn = st.button("Generate Slides", use_container_width=True)
 
-    with papers_csv.open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            paper_pdf_path = row.get("paper_pdf_path", "")
-            candidates = {paper_pdf_path}
-            try:
-                candidates.add(str(Path(paper_pdf_path).resolve()))
-            except Exception:
-                pass
-            try:
-                if paper_pdf_path.startswith("SlideGen/"):
-                    candidates.add(str((Path.cwd() / Path(*Path(paper_pdf_path).parts[1:])).resolve()))
-            except Exception:
-                pass
-            if target_candidates & candidates:
-                return row.get("paper_id")
-    return None
-
-def extract_title_text(title_raw):
-    """ title 为 str / list / dict / list[dict]"""
-    if isinstance(title_raw, list):
-        parts = []
-        for t in title_raw:
-            if isinstance(t, dict) and "runs" in t:
-                for run in t["runs"]:
-                    parts.append(run.get("text", ""))
+        if generate_btn:
+            if not uploaded_file:
+                st.warning("Please upload a PDF first.")
             else:
-                parts.append(str(t))
-        return ' '.join(parts)
-    elif isinstance(title_raw, dict):
-        return str(title_raw.get('text', ''))
+                with st.spinner("Generating your personalized slides..."):
+                    time.sleep(2)
+                st.session_state["deck_generated"] = True
+                st.session_state["plan"] = copy.deepcopy(SAMPLE_PLAN)
+                st.session_state["revised_bullets"] = None
+                st.session_state["original_bullets_snapshot"] = None
+                st.success("Deck generated. Head to the Revise tab to refine individual slides.")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 2 — REVISE
+# ════════════════════════════════════════════════════════════════════════════════
+with tab_revise:
+    if not st.session_state["deck_generated"]:
+        st.markdown("""
+        <div class="card" style="text-align:center; padding:3rem; margin-top:2rem;">
+            <div style="font-family:'DM Serif Display',serif; font-size:1.4rem; color:#3d3d3d; margin-bottom:0.5rem;">
+                No deck generated yet
+            </div>
+            <div class="helper-text" style="text-align:center;">
+                Go to the Generate tab, upload a paper, and hit Generate first.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        return str(title_raw)
+        plan = st.session_state["plan"]
+        slides = plan["slides"]
 
-def extract_bullet_text(bullet_raw): 
-    if isinstance(bullet_raw, list):
-        return ' '.join([extract_bullet_text(b) for b in bullet_raw])
-    elif isinstance(bullet_raw, dict):
-        if "text" in bullet_raw:
-            return bullet_raw["text"]
-        elif "runs" in bullet_raw:
-            return ''.join([r.get("text", "") for r in bullet_raw["runs"]])
-        else:
-            return ""
-    else:
-        return str(bullet_raw)
+        col_left, col_right = st.columns([1, 1.4], gap="large")
 
-def save_panels(panels, paper_name, save_dir="outputs"):
-    os.makedirs(save_dir, exist_ok=True)
-    with open(os.path.join(save_dir, f"{paper_name}_panels.json"), "w") as f:
-        json.dump(panels, f, indent=4)
-
-def load_panels(paper_name, save_dir="outputs"):
-    with open(os.path.join(save_dir, f"{paper_name}_panels.json"), "r") as f:
-        return json.load(f)
-
-
-from pptx.util import Inches, Pt
-from pptx.enum.text import PP_ALIGN
-from pptx import Presentation
-def _import_pipeline_modules(personalization_mode: str = "standard"):
-    from pptx.util import Inches
-    from SlidesAgent.parse_raw import (
-        parse_raw,
-        gen_image_and_table,
-        export_formula_crops_from_texts,
-        export_formula_sections_grouped_json_from_texts,
-    )
-    from SlidesAgent.gen_figure_match import gen_figure_match, filter_image_table
-    from SlidesAgent.gen_formula import build_formula_json, gen_formula_match_v1
-    if personalization_mode == "retrieval":
-        from SlidesAgent.layout_agent_xin_retrieval import generate_slide_plan
-    else:
-        from SlidesAgent.layout_agent_xin import generate_slide_plan
-    from SlidesAgent.layout_filler import generate_pptx_from_plan
-    from Capstone.preference_distill import distill_author_profile
-    from utils.wei_utils import get_agent_config
-
-    return {
-        "Inches": Inches,
-        "parse_raw": parse_raw,
-        "gen_image_and_table": gen_image_and_table,
-        "export_formula_crops_from_texts": export_formula_crops_from_texts,
-        "export_formula_sections_grouped_json_from_texts": export_formula_sections_grouped_json_from_texts,
-        "gen_figure_match": gen_figure_match,
-        "filter_image_table": filter_image_table,
-        "build_formula_json": build_formula_json,
-        "gen_formula_match_v1": gen_formula_match_v1,
-        "generate_slide_plan": generate_slide_plan,
-        "generate_pptx_from_plan": generate_pptx_from_plan,
-        "distill_author_profile": distill_author_profile,
-        "get_agent_config": get_agent_config,
-    }
-
-
-def build_arg_parser(*, description: str = 'Poster Generation Pipeline') -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=description)
-    parser.add_argument('--paper_path', type=str)
-    parser.add_argument('--model_name_t', type=str, default='4o')
-    parser.add_argument('--model_name_v', type=str, default='4o')
-    parser.add_argument('--index', type=int, default=0)
-    parser.add_argument('--paper_name', type=str, default=None)
-    parser.add_argument(
-        '--output_dir',
-        type=str,
-        default='.',
-        help=(
-            'Base directory for run artifacts. The pipeline will create '
-            '"contents/<paper_name>" and "<model>_images_and_tables/<paper_name>" under this path.'
-        ),
-    )
-    parser.add_argument('--tmp_dir', type=str, default='tmp')
-    parser.add_argument('--no_blank_detection', action='store_true', help='When overflow is severe, try this option.')
-    parser.add_argument('--ablation_no_tree_layout', action='store_true', help='Ablation study: no tree layout')
-    parser.add_argument('--ablation_no_commenter', action='store_true', help='Ablation study: no commenter')
-    parser.add_argument('--ablation_no_example', action='store_true', help='Ablation study: no example')
-    parser.add_argument(
-        '--outline_mode',
-        choices=['high_level', 'technical'],
-        default='high_level',
-        help='Use high_level for a compact presentation narrative, or technical to preserve major paper subsections.',
-    )
-    parser.add_argument(
-        "--formula_mode",
-        type=int,
-        choices=[1, 2, 3],
-        default=1,
-        help=(
-            "Method to add formulas: "
-            "1 = use bbox crop from docling, "
-            "2 = use LaTeX code rendering, "
-            "3 = use user-marked boxes"
-        ),
-    )
-    parser.add_argument(
-        '--use_author_preferences',
-        action='store_true',
-        help='Use a distilled author preference profile when generating the slide plan.',
-    )
-    parser.add_argument('--author_id', type=str, default=None, help='Canonical author_id used by the preference distiller.')
-    parser.add_argument(
-        '--author_profile_path',
-        type=str,
-        default=None,
-        help='Optional path to an existing distilled author profile JSON.',
-    )
-    parser.add_argument(
-        '--preference_model',
-        type=str,
-        default=None,
-        help='Model used to generate the author preference profile if needed. Defaults to --model_name_t.',
-    )
-    parser.add_argument(
-        '--preference_max_papers',
-        type=int,
-        default=5,
-        help='Maximum number of prior decks to sample for preference distillation.',
-    )
-    parser.add_argument(
-        '--force_refresh_preferences',
-        action='store_true',
-        help='Regenerate the author profile even if a cached profile JSON already exists.',
-    )
-    parser.add_argument(
-        '--personalization_mode',
-        choices=['standard', 'retrieval'],
-        default='standard',
-        help='Choose the standard personalization path or the retrieval-conditioned personalization path.',
-    )
-    return parser
-
-
-def configure_variant_args(args: argparse.Namespace) -> bool:
-    if getattr(args, "preference_model", None) is None:
-        args.preference_model = args.model_name_t
-
-    requested_personalized = bool(getattr(args, "use_author_preferences", False))
-
-    if not getattr(args, "output_variant_suffix", None):
-        if requested_personalized:
-            args.output_variant_suffix = (
-                "_personalized_retrieval" if getattr(args, "personalization_mode", "standard") == "retrieval"
-                else "_personalized"
+        # ── Left: slide selector + current bullets ────────────────────────────
+        with col_left:
+            st.markdown('<span class="section-label">Select a Slide</span>', unsafe_allow_html=True)
+            slide_labels = [
+                f"{s['section']} → {s['subsection']}"
+                for s in slides
+            ]
+            selected_label = st.selectbox(
+                "Slide",
+                slide_labels,
+                label_visibility="collapsed"
             )
-        else:
-            args.output_variant_suffix = "_baseline"
+            selected_idx = slide_labels.index(selected_label)
+            selected_slide = slides[selected_idx]
 
-    if not hasattr(args, "output_folder_suffix") or args.output_folder_suffix is None:
-        if requested_personalized:
-            args.output_folder_suffix = (
-                "_personalized_retrieval" if getattr(args, "personalization_mode", "standard") == "retrieval"
-                else "_personalized"
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<span class="section-label">Current Bullets</span>', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="slide-label">{selected_slide["template_id"]}</div>',
+                unsafe_allow_html=True
             )
-        else:
-            args.output_folder_suffix = ""
+            render_bullets(selected_slide["bullets"])
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    return requested_personalized
+        # ── Right: instruction + before/after ─────────────────────────────────
+        with col_right:
+            st.markdown('<span class="section-label">Post-Generation Instruction</span>', unsafe_allow_html=True)
+            st.markdown(
+                '<p class="helper-text">Revise this specific slide with a free-form instruction.</p>',
+                unsafe_allow_html=True
+            )
+            instruction = st.text_area(
+                "Instruction",
+                placeholder="e.g. Make this less technical, shorten to 2 bullets, add sub-bullets with more detail...",
+                label_visibility="collapsed",
+                height=100,
+            )
 
+            revise_btn = st.button("Revise Slide", use_container_width=True)
 
-def prepare_author_profile(args: argparse.Namespace, distill_author_profile, detail_log: dict) -> None:
-    if not getattr(args, "use_author_preferences", False):
-        return
-    if getattr(args, "personalization_mode", "standard") == "retrieval" and not args.author_profile_path:
-        raise ValueError(
-            "--author_profile_path is required when --personalization_mode retrieval is enabled. "
-            "This mode expects a prebuilt retrieval profile JSON."
+            if revise_btn:
+                if not instruction.strip():
+                    st.warning("Please enter an instruction first.")
+                else:
+                    with st.spinner("Revising..."):
+                        try:
+                            snapshot = copy.deepcopy(selected_slide["bullets"])
+                            revised = revise_bullets(selected_slide, instruction)
+
+                            st.session_state["plan"]["slides"][selected_idx]["bullets"] = revised
+                            st.session_state["revised_bullets"] = revised
+                            st.session_state["original_bullets_snapshot"] = snapshot
+
+                        except Exception as e:
+                            st.error(f"Something went wrong: {e}")
+
+            # ── Before / after ─────────────────────────────────────────────────
+            if st.session_state["revised_bullets"] is not None:
+                st.markdown('<hr class="thin-divider">', unsafe_allow_html=True)
+
+                bc, ac = st.columns(2, gap="medium")
+
+                with bc:
+                    st.markdown('<div class="col-header">Before</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="card">', unsafe_allow_html=True)
+                    render_bullets(st.session_state["original_bullets_snapshot"])
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                with ac:
+                    st.markdown('<div class="col-header">After</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
+                    render_bullets(st.session_state["revised_bullets"])
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                st.success("Slide revised. Select another slide to keep refining, or download below.")
+
+        # ── Download ───────────────────────────────────────────────────────────
+        st.markdown('<hr class="thin-divider">', unsafe_allow_html=True)
+        st.markdown('<span class="section-label">Export</span>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="helper-text">Download the full revised slide plan. Re-render through the pipeline to produce an updated PPTX.</p>',
+            unsafe_allow_html=True
         )
-    if args.author_profile_path:
-        profile_path = Path(args.author_profile_path)
-    else:
-        if not args.author_id:
-            raise ValueError("--author_id is required when --use_author_preferences is enabled without --author_profile_path.")
-        profile_path = Path("Capstone/profiles") / f"{args.author_id}.json"
-
-    if profile_path.exists() and not args.force_refresh_preferences:
-        print(f"[preferences] Reusing existing author profile: {profile_path}", flush=True)
-        args.author_profile_path = str(profile_path)
-        detail_log['author_profile_path'] = args.author_profile_path
-        return
-
-    if not args.author_id:
-        raise ValueError("--author_id is required when regenerating an author preference profile.")
-
-    exclude_pdf_paths = set()
-    try:
-        exclude_pdf_paths.add(str(Path(args.paper_path).resolve()))
-    except Exception:
-        exclude_pdf_paths.add(args.paper_path)
-    target_paper_id = find_target_paper_id(args.paper_path)
-    exclude_paper_ids = {target_paper_id} if target_paper_id else set()
-    try:
-        print(
-            f"[preferences] Starting profile distillation for author_id={args.author_id} "
-            f"(force_refresh={args.force_refresh_preferences}, max_papers={args.preference_max_papers})",
-            flush=True,
+        st.download_button(
+            label="Download Revised Plan",
+            data=json.dumps(st.session_state["plan"], indent=4, ensure_ascii=False),
+            file_name="revised_plan.json",
+            mime="application/json",
         )
-        profile = distill_author_profile(
-            args.author_id,
-            output_dir=profile_path.parent,
-            max_papers=args.preference_max_papers,
-            model=args.preference_model,
-            force_refresh=args.force_refresh_preferences,
-            exclude_paper_ids=exclude_paper_ids,
-            exclude_pdf_paths=exclude_pdf_paths,
-        )
-        print(f"[preferences] Profile distillation finished: {profile_path}", flush=True)
-        profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
-        args.author_profile_path = str(profile_path)
-        detail_log['author_profile_path'] = args.author_profile_path
-        detail_log['preference_target_excluded_paper_id'] = target_paper_id
-    except ValueError as exc:
-        print(f"[preferences] {exc}")
-        print("[preferences] No non-target history remains; falling back to baseline planning.")
-        args.use_author_preferences = False
-        args.author_profile_path = None
-        detail_log['author_preferences_fallback_reason'] = str(exc)
-
-
-def run_pipeline(args: argparse.Namespace) -> None:
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-    requested_personalized = configure_variant_args(args)
-
-    if args.formula_mode == 1:
-        print("👉 Using Docling bbox crop method...")
-    elif args.formula_mode == 2:
-        print("👉 Using Docling LaTeX rendering method...")
-    elif args.formula_mode == 3:
-        print("👉 Using user-marked boxes method...")
-
-    start_time = time.time()
-    os.makedirs(args.tmp_dir, exist_ok=True)
-
-    detail_log = {}
-    pipeline = _import_pipeline_modules(getattr(args, "personalization_mode", "standard"))
-    Inches = pipeline["Inches"]
-    parse_raw = pipeline["parse_raw"]
-    gen_image_and_table = pipeline["gen_image_and_table"]
-    export_formula_crops_from_texts = pipeline["export_formula_crops_from_texts"]
-    export_formula_sections_grouped_json_from_texts = pipeline["export_formula_sections_grouped_json_from_texts"]
-    gen_figure_match = pipeline["gen_figure_match"]
-    filter_image_table = pipeline["filter_image_table"]
-    build_formula_json = pipeline["build_formula_json"]
-    gen_formula_match_v1 = pipeline["gen_formula_match_v1"]
-    generate_slide_plan = pipeline["generate_slide_plan"]
-    generate_pptx_from_plan = pipeline["generate_pptx_from_plan"]
-    distill_author_profile = pipeline["distill_author_profile"]
-    get_agent_config = pipeline["get_agent_config"]
-
-    detail_log['outline_mode'] = args.outline_mode
-    detail_log['personalization_mode'] = getattr(args, "personalization_mode", "standard")
-    slide_width_inches = 13.33
-    slide_height_inches = 7.5
-    slide_width = Inches(slide_width_inches)
-    slide_height = Inches(slide_height_inches)
-
-    if args.paper_name is None:
-        target_paper_id = find_target_paper_id(args.paper_path)
-        paper_name = output_key_from_paper_id(target_paper_id)
-        if paper_name is None:
-            paper_name = infer_output_key_from_paper_path(args.paper_path)
-        args.paper_name = append_outline_mode_suffix(paper_name, args.outline_mode)
-    else:
-        paper_name = append_outline_mode_suffix(args.paper_name, args.outline_mode)
-        args.paper_name = paper_name
-
-    agent_config_t = get_agent_config(args.model_name_t)
-    agent_config_v = get_agent_config(args.model_name_v)
-    total_input_tokens_t, total_output_tokens_t = 0, 0
-    total_input_tokens_v, total_output_tokens_v = 0, 0
-
-    print(f'slides size: {slide_width_inches} x {slide_height_inches} inches')
-
-    prepare_author_profile(args, distill_author_profile, detail_log)
-
-    args.paper_name = append_output_folder_suffix(args.paper_name, getattr(args, "output_folder_suffix", ""))
-    detail_log['output_paper_name'] = args.paper_name
-    detail_log['output_dir'] = str(getattr(args, "output_dir", "."))
-    detail_log['requested_personalized_run'] = requested_personalized
-    detail_log['effective_use_author_preferences'] = getattr(args, "use_author_preferences", False)
-
-    figs_json_path = figures_json_path(args)
-    formula_json_path = formula_match_path(args)
-    paper_outline_json = raw_content_path(args)
-    output_pptx = output_pptx_path(args, args.output_variant_suffix)
-    images_filtered_json = images_filtered_path(args)
-    tables_filtered_json = tables_filtered_path(args)
-    reuse_cached_parse_artifacts = all(
-        os.path.exists(path)
-        for path in (
-            paper_outline_json,
-            figs_json_path,
-            formula_json_path,
-            images_filtered_json,
-            tables_filtered_json,
-        )
-    )
-
-    if reuse_cached_parse_artifacts:
-        print(
-            "[pipeline] Reusing cached raw/figure/formula artifacts; skipping docling parse",
-            flush=True,
-        )
-        detail_log['reused_cached_parse_artifacts'] = True
-    else:
-        print("[pipeline] Starting raw paper parsing", flush=True)
-        input_token, output_token, _parse_time_taken, raw_result = parse_raw(args, agent_config_t, version=2)
-        print("[pipeline] Raw paper parsing finished", flush=True)
-
-        total_input_tokens_t += input_token
-        total_output_tokens_t += output_token
-        print("[pipeline] Extracting images and tables", flush=True)
-        _, _, images, tables = gen_image_and_table(args, raw_result)
-        print("[pipeline] Image/table extraction finished", flush=True)
-
-        if args.formula_mode == 1:
-            print("start export_formula_crops_from_texts")
-            formulas, conv_res = export_formula_crops_from_texts(args, raw_result)
-            print("start export_formula_sections_grouped_json_from_texts")
-            export_formula_sections_grouped_json_from_texts(args, conv_res)
-        elif args.formula_mode == 3:
-            print("add formula")
-            build_formula_json(args, raw_result)
-
-        print(f'Parsing token consumption: {input_token} -> {output_token}')
-
-        detail_log['parser_in_t'] = input_token
-        detail_log['parser_out_t'] = output_token
-        input_token, output_token = filter_image_table(args, agent_config_t)
-        total_input_tokens_t += input_token
-        total_output_tokens_t += output_token
-        print(f'Filter figures token consumption: {input_token} -> {output_token}')
-
-        detail_log['filter_in_t'] = input_token
-        detail_log['filter_out_t'] = output_token
-        input_token, output_token, _figure_match_time, figures = gen_figure_match(args, agent_config_t, raw_result)
-        total_input_tokens_t += input_token
-        total_output_tokens_t += output_token
-
-        input_token, output_token, _formula_match_time = gen_formula_match_v1(args, agent_config_t, raw_result)
-        total_input_tokens_t += input_token
-        total_output_tokens_t += output_token
-
-    input_token, output_token, _time_taken = generate_slide_plan(args)
-    total_input_tokens_t += input_token
-    total_output_tokens_t += output_token
-
-    end_time = time.time()
-    time_taken = end_time - start_time
-    print("time_taken:", time_taken)
-
-    output_dir = paper_output_dir(args)
-    variant_suffix = args.output_variant_suffix
-    output_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_json_path(args, variant_suffix)
-    with open(log_file, 'w') as f:
-        log_data = {
-            'input_tokens_t': total_input_tokens_t,
-            'output_tokens_t': total_output_tokens_t,
-            'input_tokens_v': total_input_tokens_v,
-            'output_tokens_v': total_output_tokens_v,
-            'time_taken': time_taken,
-        }
-        json.dump(log_data, f, indent=4)
-
-    print("✅ all files exist……")
-    generate_pptx_from_plan(args, 3)
-
-    detail_log_file = detail_log_path(args, variant_suffix)
-    with open(detail_log_file, 'w') as f:
-        json.dump(detail_log, f, indent=4)
-
-
-def main() -> None:
-    parser = build_arg_parser()
-    args = parser.parse_args()
-    run_pipeline(args)
-
-
-if __name__ == '__main__':
-    main()
