@@ -1,0 +1,255 @@
+{
+  "description": "All-multi-request post-render refinement evaluation: 10 bundled repair prompts across five representative generated decks.",
+  "case_templates": [
+    {
+      "case_id": "multi_title_bullet_audience",
+      "prompt_family": "title_bullet_audience_bundle",
+      "active_slide_id": "S02",
+      "target_slide_ids": ["S02", "S03", "S04", "S05"],
+      "instruction": "Make the title more direct, add another bullet to slide 5, and make slides 3 and 4 better for a general technical audience.",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S02", "operation": "rewrite_title", "requirement": "Make the visible title on S02 more direct."},
+        {"task_id": "T02", "slide_id": "S05", "operation": "add_bullet", "requirement": "Add exactly one new top-level bullet to S05."},
+        {"task_id": "T03", "slide_id": "S03", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S03 for a general technical audience."},
+        {"task_id": "T04", "slide_id": "S04", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S04 for a general technical audience."}
+      ],
+      "constraints": {"max_changed_slides": 4, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "title_changed_slide_id": "S02",
+        "pptx_specified_title_visible": true,
+        "bullet_count_delta_by_slide": {"S05": 1},
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    },
+    {
+      "case_id": "multi_title_and_takeaway",
+      "prompt_family": "title_plus_bullet",
+      "active_slide_id": "S02",
+      "target_slide_ids": ["S02", "S05"],
+      "instruction": "Make the current slide title sharper and add one takeaway bullet to slide 5.",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S02", "operation": "rewrite_title", "requirement": "Rewrite the visible title on S02."},
+        {"task_id": "T02", "slide_id": "S05", "operation": "add_bullet", "requirement": "Add exactly one new top-level takeaway bullet to S05."}
+      ],
+      "constraints": {"max_changed_slides": 2, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "title_changed_slide_id": "S02",
+        "pptx_specified_title_visible": true,
+        "bullet_count_delta_by_slide": {"S05": 1},
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    },
+    {
+      "case_id": "multi_two_audience_plus_title",
+      "prompt_family": "title_plus_two_audience",
+      "active_slide_id": "S02",
+      "target_slide_ids": ["S02", "S03", "S04"],
+      "instruction": "Make this slide title more direct, and make slides 3 and 4 easier for a general technical audience.",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S02", "operation": "rewrite_title", "requirement": "Rewrite the visible title on S02."},
+        {"task_id": "T02", "slide_id": "S03", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S03 for a general technical audience."},
+        {"task_id": "T03", "slide_id": "S04", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S04 for a general technical audience."}
+      ],
+      "constraints": {"max_changed_slides": 3, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "title_changed_slide_id": "S02",
+        "pptx_specified_title_visible": true,
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    },
+    {
+      "case_id": "multi_preserve_visuals_and_polish",
+      "prompt_family": "visual_preservation_bundle",
+      "active_slide_id": "S03",
+      "target_slide_ids": ["S03", "S04"],
+      "instruction": "Improve the wording on slide 3 while preserving every visual asset, and make slide 4 sound more presentation-friendly.",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S03", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S03 while preserving all non-text assets."},
+        {"task_id": "T02", "slide_id": "S04", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S04 to sound more presentation-friendly."}
+      ],
+      "constraints": {"max_changed_slides": 2, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    },
+    {
+      "case_id": "multi_scope_title_and_audience",
+      "prompt_family": "scope_limited_bundle",
+      "active_slide_id": "S02",
+      "target_slide_ids": ["S02", "S04"],
+      "instruction": "Only change slide 2 and slide 4: tighten slide 2's title and make slide 4 less jargony.",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S02", "operation": "rewrite_title", "requirement": "Rewrite the visible title on S02."},
+        {"task_id": "T02", "slide_id": "S04", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S04 with less jargon."}
+      ],
+      "constraints": {"max_changed_slides": 2, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "title_changed_slide_id": "S02",
+        "pptx_specified_title_visible": true,
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    },
+    {
+      "case_id": "multi_two_bullets_and_title",
+      "prompt_family": "title_plus_two_bullets",
+      "active_slide_id": "S02",
+      "target_slide_ids": ["S02", "S04", "S05"],
+      "instruction": "Make slide 2's title more direct, add one takeaway bullet to slide 4, and add one takeaway bullet to slide 5.",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S02", "operation": "rewrite_title", "requirement": "Rewrite the visible title on S02."},
+        {"task_id": "T02", "slide_id": "S04", "operation": "add_bullet", "requirement": "Add exactly one new top-level bullet to S04."},
+        {"task_id": "T03", "slide_id": "S05", "operation": "add_bullet", "requirement": "Add exactly one new top-level bullet to S05."}
+      ],
+      "constraints": {"max_changed_slides": 3, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "title_changed_slide_id": "S02",
+        "pptx_specified_title_visible": true,
+        "bullet_count_delta_by_slide": {"S04": 1, "S05": 1},
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    },
+    {
+      "case_id": "multi_intro_title_and_results",
+      "prompt_family": "title_plus_results_bullet",
+      "active_slide_id": "S02",
+      "target_slide_ids": ["S02", "S05"],
+      "instruction": "Make the current slide title more direct, and add a concise results takeaway to slide 5.",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S02", "operation": "rewrite_title", "requirement": "Rewrite the visible title on S02."},
+        {"task_id": "T02", "slide_id": "S05", "operation": "add_bullet", "requirement": "Add exactly one concise top-level results takeaway bullet to S05."}
+      ],
+      "constraints": {"max_changed_slides": 2, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "title_changed_slide_id": "S02",
+        "pptx_specified_title_visible": true,
+        "bullet_count_delta_by_slide": {"S05": 1},
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    },
+    {
+      "case_id": "multi_audience_and_takeaway",
+      "prompt_family": "audience_plus_bullet",
+      "active_slide_id": "S03",
+      "target_slide_ids": ["S03", "S05"],
+      "instruction": "Make slide 3 easier to understand for a general technical audience, and add one takeaway bullet to slide 5.",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S03", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S03 for a general technical audience."},
+        {"task_id": "T02", "slide_id": "S05", "operation": "add_bullet", "requirement": "Add exactly one new top-level takeaway bullet to S05."}
+      ],
+      "constraints": {"max_changed_slides": 2, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "bullet_count_delta_by_slide": {"S05": 1},
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    },
+    {
+      "case_id": "multi_title_visual_safe_audience",
+      "prompt_family": "title_visual_safe_audience",
+      "active_slide_id": "S02",
+      "target_slide_ids": ["S02", "S03"],
+      "instruction": "Make slide 2's title more direct and make slide 3 easier to explain, but keep slide 3's visuals unchanged.",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S02", "operation": "rewrite_title", "requirement": "Rewrite the visible title on S02."},
+        {"task_id": "T02", "slide_id": "S03", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S03 while preserving all non-text assets."}
+      ],
+      "constraints": {"max_changed_slides": 2, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "title_changed_slide_id": "S02",
+        "pptx_specified_title_visible": true,
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    },
+    {
+      "case_id": "multi_casual_four_part_request",
+      "prompt_family": "casual_four_task_bundle",
+      "active_slide_id": "S02",
+      "target_slide_ids": ["S02", "S03", "S04", "S05"],
+      "instruction": "Can you make this title sharper, make slides 3 and 4 less jargony, and add one takeaway to slide 5?",
+      "edit_tasks": [
+        {"task_id": "T01", "slide_id": "S02", "operation": "rewrite_title", "requirement": "Rewrite the visible title on S02."},
+        {"task_id": "T02", "slide_id": "S03", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S03 with less jargon."},
+        {"task_id": "T03", "slide_id": "S04", "operation": "audience_rewrite", "requirement": "Rewrite visible text on S04 with less jargon."},
+        {"task_id": "T04", "slide_id": "S05", "operation": "add_bullet", "requirement": "Add exactly one new top-level takeaway bullet to S05."}
+      ],
+      "constraints": {"max_changed_slides": 4, "preserve_paper_fidelity": true, "do_not_introduce_external_assets": true},
+      "expected": {
+        "target_slide_changed": true,
+        "all_target_slides_changed": true,
+        "only_target_slides_changed": true,
+        "title_changed_slide_id": "S02",
+        "pptx_specified_title_visible": true,
+        "bullet_count_delta_by_slide": {"S05": 1},
+        "protected_slides_unchanged": true,
+        "no_external_asset_changes": true
+      }
+    }
+  ],
+  "decks": [
+    {
+      "run_dir": "contents/bmvc13_9_high_level_personalized",
+      "pptx_path": "contents/bmvc13_9_high_level_personalized/gpt-4o-mini_gpt-4o-mini_output_slides_personalized.pptx",
+      "slide_plan_path": "contents/bmvc13_9_high_level_personalized/<gpt-4o-mini_gpt-4o-mini>_slide_plan_personalized.json",
+      "author_profile_path": "Capstone/profiles/andrew_zisserman.json"
+    },
+    {
+      "run_dir": "contents/aaron_bmvc13_20_high_level_personalized",
+      "pptx_path": "contents/aaron_bmvc13_20_high_level_personalized/gpt-4o-mini_gpt-4o-mini_output_slides_personalized.pptx",
+      "slide_plan_path": "contents/aaron_bmvc13_20_high_level_personalized/<gpt-4o-mini_gpt-4o-mini>_slide_plan_personalized.json",
+      "author_profile_path": "Capstone/profiles/aaron_courville.json"
+    },
+    {
+      "run_dir": "contents/christopher_bmvc13_18_high_level_personalized",
+      "pptx_path": "contents/christopher_bmvc13_18_high_level_personalized/gpt-4o-mini_gpt-4o-mini_output_slides_personalized.pptx",
+      "slide_plan_path": "contents/christopher_bmvc13_18_high_level_personalized/<gpt-4o-mini_gpt-4o-mini>_slide_plan_personalized.json",
+      "author_profile_path": "Capstone/profiles/christopher_r.json"
+    },
+    {
+      "run_dir": "contents/peng_bmvc13_27_high_level_personalized",
+      "pptx_path": "contents/peng_bmvc13_27_high_level_personalized/gpt-4o-mini_gpt-4o-mini_output_slides_personalized.pptx",
+      "slide_plan_path": "contents/peng_bmvc13_27_high_level_personalized/<gpt-4o-mini_gpt-4o-mini>_slide_plan_personalized.json",
+      "author_profile_path": "Capstone/profiles/peng_cheng.json"
+    },
+    {
+      "run_dir": "contents/peng_bmvc13_0_high_level_personalized",
+      "pptx_path": "contents/peng_bmvc13_0_high_level_personalized/gpt-4o-mini_gpt-4o-mini_output_slides_personalized.pptx",
+      "slide_plan_path": "contents/peng_bmvc13_0_high_level_personalized/<gpt-4o-mini_gpt-4o-mini>_slide_plan_personalized.json",
+      "author_profile_path": "Capstone/profiles/peng_cheng.json"
+    }
+  ]
+}
