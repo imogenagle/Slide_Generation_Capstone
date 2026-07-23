@@ -1,0 +1,75 @@
+Post-Render Refinement Change Log
+=================================
+
+2026-07-15
+----------
+
+- Updated the post-render refinement batch harness to report validation-blocked repairs as `validation_blocked` instead of runtime `error` when strict repair validation refuses PPTX regeneration.
+- Fixed batch token accounting so per-case repair tokens persisted in `post_render_refinement_report.json` are counted for validation-blocked and report-backed error cases, not only regenerated cases.
+- Added task-level diagnostics to `case_result.json`, `summary.csv`, and `summary.json`, including missing/skipped task IDs, applied-but-unchanged task IDs, unaccounted editable slides, protected slide violations, and validation acceptance.
+- Added `--retry-validation-blocks` to retry validation-blocked repairs at most once with the original prompt, edit-task contract, and validation failure details while preserving the same protected-slide constraints.
+- Tightened `utils/prompt_templates/post_render_repair.yaml` so `audience_rewrite` tasks must change visible slide text or be marked skipped with an unchanged justification; no-op applied claims remain blocked by strict validation.
+- Added deterministic post-processing after LLM repair to restore protected slides from the original plan and complete no-op visible-text tasks only when they are explicit editable tasks. Offline replay of the five-case reporting batch changed the known no-op audience rewrites into real slide-plan diffs and restored the protected-slide violation without weakening validation.
+- Added `Capstone/post_render_refinement_prompt_breadth_manifest.json` for a prompt-breadth evaluation: 10 realistic post-render refinement request patterns across the same five representative decks, producing 50 cases focused on interaction breadth rather than paper breadth.
+- Added prompt-family reporting to the batch summary and CSV so prompt-breadth runs can be summarized by request type. Added a deterministic top-level bullet fallback for explicit `add_bullet` tasks when the model adds subtext instead of the required new top-level bullet.
+- Added `Capstone/post_render_refinement_all_multi_request_manifest.json` for an all-multi-request companion evaluation: 10 bundled repair prompts across the same five decks, with every case requiring at least two explicit repair tasks.
+- Pinned post-render refinement manifests to the original personalized PPTX and slide-plan artifacts, and updated the batch runner to preserve explicit `pptx_path` and `slide_plan_path` fields from manifest deck entries. This avoids source-file ambiguity after evaluation runs add many refined artifacts to the same deck folders.
+- Removed the experimental LLM visual-review branch from the maintained refinement code path. Inspection is now deterministic-only, while LLM usage is reserved for the user-guided slide-plan repair step.
+
+2026-06-30
+----------
+
+- Added a standalone post-render refinement agent module at `SlidesAgent/post_render_refinement.py`.
+- Added deterministic rendered-deck inspection for near-blank slides, slide-plan density, sparse slides, visual/template mismatch, and overloaded visual/text combinations.
+- Added optional LLM visual review behind an explicit `--llm-review` flag.
+- Added user decision template output so review can stay human-guided even when LLM review is disabled.
+- Added deterministic repair support for a small set of safe operations: text-density reduction, sparse-slide enrichment, title changes with explicit title instructions, and mechanical visual-template mismatch fixes.
+- Added optional LLM repair mode behind `--repair-mode llm`.
+- Added token usage and benefit ledger to inspection and repair reports.
+- Added efficiency recommendation fields so LLM review can be disabled if token cost does not produce measurable lift.
+- Added prompt templates:
+  - `utils/prompt_templates/post_render_review.yaml`
+  - `utils/prompt_templates/post_render_repair.yaml`
+- Added quick Web UI integration:
+  - `POST /refinement/{job_id}/inspect`
+  - `POST /refinement/{job_id}/apply`
+  - `GET /download/{job_id}?variant=original|refined`
+- Added a compact frontend refinement panel after normal generation completes.
+- Kept LLM visual review opt-in in the UI; deterministic inspection is the default.
+- Updated `Capstone/run_folder_profile_distill.py` to support external-drive source folders by writing absolute paths when a source folder resolves outside the repo. Repo-local paths still use the existing `SlideGen/...` format.
+- Archived LLM visual review from the normal refinement workflow after a live token audit showed one deck inspection used 21,224 input tokens for one suggested edit. The Web UI now uses deterministic/user-guided refinement only; `--llm-review` remains a separate experimental CLI/API option.
+- Updated LLM review accounting to record prompt character count, image count, image byte size, and image names alongside API-reported token usage.
+- Fixed inspection benefit metrics so `rendered_issue_count_before` reflects deterministic issues before LLM suggestions are appended.
+- Reduced experimental LLM review image cap from 6 to 2 and removed the fallback that sent the first rendered slides when no deterministic issue targeted a specific slide.
+- Added a local testing mode to `SlidesAgent/post_render_refinement.py`: `local inspect`, `local repair`, and `local all` infer the PPTX, slide plan, model names, and refinement output directory from `--run-dir`.
+- Made repair-only generation imports lazy so `local --help`, `local inspect`, and `local repair --no-regenerate` can run quickly without loading the full slide generation stack.
+- Updated local repair testing to render regenerated refined decks by default into `post_render_refinement/refined_rendered_slides`, with `--no-validate-render` available when a quick plan-only run is preferred.
+- Added `Capstone/run_post_render_refinement_batch.py` for systematic user-prompt repair testing without LLM visual review. The harness supports auto-discovered run directories, repeated `--run-dir` inputs, optional manifests, dry runs, resume mode, isolated case output folders, regenerated refined PPTX renders, JSON reports, and CSV/JSON batch summaries.
+- Added deterministic batch metrics for prompt adherence, protected-slide safety, slide-count preservation, target-only changes, visible title checks, bullet-count constraints, visual asset count preservation, refined render issues, runtime, and added repair token usage.
+- Added batch guardrails so auto-discovered runs fail loudly when fewer decks are found than `--limit-decks`, unless `--allow-fewer-decks` is passed. `--require-deck-count` can now enforce an exact minimum deck count for full experiments.
+- Added a multi-author post-render refinement manifest at `Capstone/post_render_refinement_multi_author_manifest.json` and symlinked source folders under `Capstone/tmp_author_sources_multi/` for `aaron_courville`, `christopher_r`, and `peng_cheng`, based on curated `Capstone/input_presentations` pointers from the project zip.
+- Added multi-request prompting support to the batch harness: cases can now define `active_slide_id`, multiple `target_slide_ids`, and metrics for all-target changes, target-only edits, title changes on a specified slide, and bullet-count deltas by slide.
+- Added `Capstone/post_render_refinement_multi_request_manifest.json` to test bundled user prompts across the five generated multi-author decks.
+- Updated `utils/prompt_templates/post_render_repair.yaml` with explicit rules for bundled prompts, editable slide sets, and active-slide disambiguation.
+- Added a non-dry-run API key preflight to `Capstone/run_post_render_refinement_batch.py` so local batch tests fail immediately if `OPENAI_API_KEY` is not set.
+- Ran the multi-request batch at `Capstone/evaluations/post_render_refinement/multi_request_refinement_batch`: 5/5 cases completed, 0/5 passed under strict metrics, mean score 0.8154, and 34,793 added repair tokens. The main failure pattern was under-editing bundled requests: protected-slide checks passed, but slides S03/S04 were usually skipped and some title/bullet subrequests were missed.
+- Tightened the multi-request repair contract after the first bundled-prompt run: manifests can now pass explicit `edit_tasks`, generated `user_decisions.json` includes those tasks, the repair prompt requires an `edit_task_checklist`, and repair validation now reports missing/skipped tasks plus editable slides that were neither changed nor justified unchanged.
+- Ran the tightened task-contract multi-request batch at `Capstone/evaluations/post_render_refinement/multi_request_task_contract_batch`: 4/5 cases regenerated, 0/5 passed under strict metrics, mean score improved to 0.8654, and 31,279 added repair tokens. The contract improved S02 title and S05 bullet adherence, but S03/S04 remained no-op in most decks despite checklist claims; one Christopher deck was correctly blocked for changing protected S01.
+- Promoted task-accounting diagnostics into hard repair validation: if an `edit_task_checklist` item is marked `applied`, its slide must actually differ from the original slide plan, and editable slides cannot be silently left unchanged. Validation-failure reports are now written before PPTX regeneration is refused.
+- Ran the strict-validation multi-request batch at `Capstone/evaluations/post_render_refinement/multi_request_strict_validation_batch`: 1/5 cases passed and regenerated with a perfect 1.0 metric score, while 4/5 were blocked before PPTX generation. The blocked cases were mostly no-op S03/S04 audience rewrites that the model claimed as applied; one case also changed protected S01. Added repair token usage was 7,333 for the single regenerated pass, with validation reports persisted for all blocked cases.
+
+README Update Notes
+-------------------
+
+- Document the second-step workflow separately from initial deck generation.
+- Emphasize that refinement is optional and removable.
+- Document the default cost-safe mode: deterministic review plus user decisions.
+- Document that LLM visual review is opt-in and tracked with added token usage.
+- Document that LLM visual review should not be part of the default Web UI or main refinement path; treat it as an experimental diagnostic command only.
+- Mention that folder-based profile distillation can use external-drive raw folders, such as `/Volumes/ExHardDrive/data_raw/...`, after the path handling compatibility fix.
+- Include examples for:
+  - `python -m SlidesAgent.post_render_refinement inspect ...`
+  - `python -m SlidesAgent.post_render_refinement local inspect --run-dir contents/<paper_name>`
+  - editing `post_render_user_decisions.template.json`
+  - `python -m SlidesAgent.post_render_refinement repair ...`
+  - `python Capstone/run_post_render_refinement_batch.py --contents-dir contents --limit-decks 5 --author-profile-path Capstone/profiles/<author>.json --model gpt-4o-mini`
