@@ -92,6 +92,7 @@ def main() -> None:
     parser.add_argument("--skip-gad", action="store_true")
     parser.add_argument("--skip-visual-appeal", action="store_true")
     parser.add_argument("--skip-layout-correctness", action="store_true")
+    parser.add_argument("--skip-layout-defects", action="store_true")
     parser.add_argument("--skip-logical-flow", action="store_true")
     parser.add_argument("--skip-faithfulness", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -184,14 +185,14 @@ def main() -> None:
             "path": "visual_appeal.json",
         }
 
-    if not args.skip_layout_correctness:
+    if not args.skip_layout_correctness and not args.skip_layout_defects:
         result = evaluate_layout_correctness(
             pptx_path=args.generated_pptx,
         )
-        write_json(output_dir / "layout_correctness.json", result)
-        summary["metrics"]["layout_correctness"] = {
+        write_json(output_dir / "layout_defects.json", result)
+        summary["metrics"]["layout_defects"] = {
             "deck_score": result.get("deck_score"),
-            "path": "layout_correctness.json",
+            "path": "layout_defects.json",
         }
 
     if not args.skip_logical_flow:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic layout-correctness evaluation for SlideGen decks."""
+"""Deterministic layout-defects evaluation for SlideGen decks."""
 
 from __future__ import annotations
 
@@ -292,7 +292,7 @@ def evaluate_layout_correctness(*, pptx_path: Path) -> dict[str, Any]:
 
     return {
         "source": "SlideGen custom",
-        "metric": "layout_correctness",
+        "metric": "layout_defects",
         "pptx_path": str(pptx_path),
         "slide_count": slide_count,
         "total_issue_counts": total_issue_counts,
@@ -308,13 +308,13 @@ def evaluate_layout_correctness(*, pptx_path: Path) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate deterministic layout correctness.")
+    parser = argparse.ArgumentParser(description="Evaluate deterministic layout defects.")
     parser.add_argument("--pptx-path", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
 
     result = evaluate_layout_correctness(pptx_path=args.pptx_path)
-    output_path = resolve_output_path("layout_correctness", args.output, args.pptx_path.stem)
+    output_path = resolve_output_path("layout_defects", args.output, args.pptx_path.stem)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(result, indent=2, ensure_ascii=False))

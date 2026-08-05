@@ -44,6 +44,8 @@ from SlidesAgent.apply_color import pick_theme_color
 
 DEFAULT_PROMPT_PATH = REPO_ROOT / "utils" / "prompt_templates" / "preference_distiller_target_conditioned.yaml"
 DEFAULT_OUTPUT_DIR_RETRIEVAL = REPO_ROOT / "Capstone" / "profiles_retrieval"
+DEFAULT_INPUT_RATE_PER_M = 0.20
+DEFAULT_OUTPUT_RATE_PER_M = 1.25
 CORE_NUMERIC_TARGET_KEYS = (
     "target_slide_count",
     "target_avg_bullets_per_slide",
@@ -84,6 +86,25 @@ MAX_LLM_RERANK_CANDIDATES = 12
 def is_content_policy_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return "content_policy_violation" in message or "content safety system" in message
+
+
+def build_usage_payload(response: Any) -> dict[str, Any]:
+    usage = getattr(response, "usage", None)
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or (prompt_tokens + completion_tokens))
+    estimated_cost_usd = (
+        (prompt_tokens / 1_000_000.0) * DEFAULT_INPUT_RATE_PER_M
+        + (completion_tokens / 1_000_000.0) * DEFAULT_OUTPUT_RATE_PER_M
+    )
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": round(estimated_cost_usd, 6),
+        "input_rate_per_m": DEFAULT_INPUT_RATE_PER_M,
+        "output_rate_per_m": DEFAULT_OUTPUT_RATE_PER_M,
+    }
 
 
 def sanitize_path_component(value: str) -> str:
@@ -897,7 +918,7 @@ def call_retrieval_distiller_model(
     system_prompt: str,
     user_prompt: str,
     deck_evidence: list[dict[str, Any]],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     client = build_openai_client()
     resolved_model_name = resolve_direct_model_name(model_name)
     excluded_slide_keys: set[str] = set()
@@ -967,7 +988,7 @@ def call_retrieval_distiller_model(
             )
     print("[retrieval-profile] Distiller response received", flush=True)
     raw_text = response.choices[0].message.content or ""
-    return extract_json_object(raw_text)
+    return extract_json_object(raw_text), build_usage_payload(response)
 
 
 def render_target_prompt(
@@ -1179,7 +1200,7 @@ def main() -> None:
         )
         return
 
-    raw_profile = call_retrieval_distiller_model(
+    raw_profile, usage = call_retrieval_distiller_model(
         args.model,
         system_prompt=rendered_prompt["system_prompt"],
         user_prompt=rendered_prompt["user_prompt"],
@@ -1196,6 +1217,7 @@ def main() -> None:
         deterministic_numeric_preferences=deterministic_numeric_preferences,
         deterministic_color_preferences=deterministic_color_preferences,
     )
+    profile["usage"] = usage
     profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Saved retrieval-conditioned profile to {profile_path}")
     print(f"Saved retrieval evidence bundle to {bundle_path}")

@@ -38,6 +38,8 @@ DEFAULT_PAPER_AUTHORS_CSV = REPO_ROOT / "Capstone" / "author_tables" / "paper_au
 DEFAULT_PAPERS_CSV = REPO_ROOT / "Capstone" / "author_tables" / "papers.csv"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "Capstone" / "profiles"
 DEFAULT_PROMPT_PATH = REPO_ROOT / "utils" / "prompt_templates" / "preference_distiller.yaml"
+DEFAULT_INPUT_RATE_PER_M = 0.20
+DEFAULT_OUTPUT_RATE_PER_M = 1.25
 
 LAYOUT_BIAS_VALUES = [
     "text_only",
@@ -264,6 +266,25 @@ def extract_json_object(raw_text: str) -> dict[str, Any]:
         if first != -1 and last != -1 and last > first:
             return json.loads(text[first : last + 1])
         raise
+
+
+def build_usage_payload(response: Any) -> dict[str, Any]:
+    usage = getattr(response, "usage", None)
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or (prompt_tokens + completion_tokens))
+    estimated_cost_usd = (
+        (prompt_tokens / 1_000_000.0) * DEFAULT_INPUT_RATE_PER_M
+        + (completion_tokens / 1_000_000.0) * DEFAULT_OUTPUT_RATE_PER_M
+    )
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": round(estimated_cost_usd, 6),
+        "input_rate_per_m": DEFAULT_INPUT_RATE_PER_M,
+        "output_rate_per_m": DEFAULT_OUTPUT_RATE_PER_M,
+    }
 
 
 def sample_representative_slide_indices(metrics: list[dict[str, Any]], max_samples: int = 6) -> list[int]:
@@ -670,7 +691,12 @@ def render_prompt(prompt_path: Path, author_metadata: dict[str, Any], deck_evide
     }
 
 
-def call_distiller_model(model_name: str, system_prompt: str, user_prompt: str, deck_evidence: list[dict[str, Any]]) -> dict[str, Any]:
+def call_distiller_model(
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    deck_evidence: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     client = build_openai_client()
     resolved_model_name = resolve_direct_model_name(model_name)
 
@@ -719,7 +745,7 @@ def call_distiller_model(model_name: str, system_prompt: str, user_prompt: str, 
     response = client.chat.completions.create(**request_kwargs)
     print("[preferences] Distiller response received", flush=True)
     raw_text = response.choices[0].message.content or ""
-    return extract_json_object(raw_text)
+    return extract_json_object(raw_text), build_usage_payload(response)
 
 
 def distill_author_profile(
@@ -792,7 +818,7 @@ def distill_author_profile(
     }
     input_bundle_path.write_text(json.dumps(input_bundle, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    raw_profile = call_distiller_model(
+    raw_profile, usage = call_distiller_model(
         model_name=model,
         system_prompt=rendered_prompt["system_prompt"],
         user_prompt=rendered_prompt["user_prompt"],
@@ -805,6 +831,7 @@ def distill_author_profile(
         max_papers=max_papers,
         deck_evidence=deck_evidence,
     )
+    profile["usage"] = usage
     profile_path.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
     return profile
 

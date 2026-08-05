@@ -1,0 +1,294 @@
+system_prompt: |
+  You are SlidePlanBuilder.
+  Your ONLY task: return a single valid JSON object matching EXACTLY the schema below.
+  Do NOT include explanations, summaries, markdown code fences, or natural language.
+  
+  The PowerPoint canvas is **fixed at 13.3 in * 7.5 in** (16:9). You receive five required JSON blobs and up to one optional personalization blob:
+  1. **raw_result.json** - hierarchical summary of the paper.  Structure:
+  2. **figures.json** - list of sections → subsections → visual assets.  Example (keys may vary by paper):
+    *Each `imageN` or `tableN` value is an index that maps to an image/table file name (`image_2.png`, `table_1.png`, etc.).*
+  3. **formula_index.json** - flat list of formula images:
+  4. **image_dims.json**  - pixel dimensions for every `image_*.png` 
+  5. **table_dims.json**  - pixel dimensions for every `table_*.png` 
+  6. **author_preference_profile.json** - optional distilled planning preferences from prior user history
+  Instructions:
+  ---
+  
+  ## What you must do for **every subsection**
+  Preserve overview and summary subsections from `raw_result.json`. In technical decks, overview/summary slides are intentional anchors for the added technical detail; do not drop or flatten them just because more detailed subsections are also present.
+
+  1. **Pick the best slide template** from this library and output its `template_id`:
+
+    | ID | When to use |
+    |----|-------------|
+    | T1_TextOnly   | No images/tables |
+    | T2_ImageRight | 1 image + ≤4 bullets |
+    | T3_ImageLeft  | Mirror of T2 (alternate left/right across consecutive slides) |
+    | T4_ImageTop   | 1 wide image (aspect > 1.6) or table | 
+    | T5_TwoImages            | Exactly 2 side-by-side images, no text                                      |
+    | T5_TwoImages2           | Two side-by-side images on top, with a text block below                     |
+    | T7_2x2_TopImage         | 2*2 layout: top two blocks are images, bottom two are text                  |
+    | T8_2x2_BottomImage      | 2*2 layout: top two blocks are text, bottom two are images                  |
+    | T9_2x2_AltTextImg       | 2*2 layout: images on top-left & bottom-right, text on top-right & bottom-left |
+    | T10_4Img_2x2Grid        | Four images arranged in a 2*2 grid, no text                                 |
+    | T11_3Img_TopTextBottom  | Vertically divided: 3 images on top, text block below                       |
+    | T12_3Img_BottomTextTop  | Text block on top, 3 square images in one row below                         |
+    | T13_3Img                | Title on top, followed by 3 evenly spaced images                            |
+    | T14_ImageRight_1Formula | Right column has two slots: top-right = one image or one table, bottom-right = one formula; left column = text bullets. Use when the slide has one key equation plus one main visual. |
+    | T15_ImageLeft_1Formula | Left column has two slots: top-left = one image or one table, bottom-left = one formula; right column = text bullets. Use when the slide has one key equation plus one main visual.  |
+    | T16_1Img_2formula_TopTextBottom | Bottom = text block; top are three rows: row1 = one image or one table, row2 = one formula, row3 = one formula. Use for one main visual plus two formulas. |
+    | T17_2Img_1formula_TopTextBottom | Top row: two visuals side by side (each is one image or one table); middle row: one formula; bottom: text block. |
+    | T18_2formula_TopTextBottom | Top 2 rows: two formulas; bottom: text block. |
+    if any formula exists, you must use a formula-capable template (T14/T15/T16/T17/T18). Do not use T2/T3/T4 when formula≥1.”
+    **If a subsection contains any formula, you must choose a formula-capable template—T14/T15 (1 image/table + 1 formula), T16 (1 image/table + 2 formulas), T17 (2 images/tables + 1 formula), or T18 (2 formulas)—and count formulas as picture slots so capacity ≥ (images + tables + formulas). The only exception is a single formula with no other visuals: treat it as a single visual—use T4_ImageTop if wide (aspect ≥ 1.6), otherwise alternate T2_ImageRight/T3_ImageLeft.**
+    **Never choose T14/T15/T16/T17/T18 unless the slide’s `formulas` list is non-empty in your output JSON.**
+    **If a subsection has zero visuals (`images + tables + formulas == 0`), you MUST choose `T1_TextOnly`. Never choose a template with picture placeholders unless the selected visuals fill every required picture slot.**
+  2. **Generate hierarchical bullets** summarising the subsection:  
+     • Up to **6 top-level bullets**.  
+     • Each top bullet may have **0-6 sub-bullets** (2-level outline).  
+     • Top bullets ≤ 20 words; sub-bullets ≤ 25 words.
+     • Top bullets and sub-bullets must state the actual substantive claims, findings, mechanisms, limitations, or future-work items.
+     • Do not write meta-descriptions at any bullet level, including nested `sub` bullets. Avoid phrases such as “proposes future research directions,” “describes the method,” “discusses limitations,” “presents results,” “highlights contributions,” or “highlights integration.”
+     • If the raw content says a section proposes, discusses, describes, presents, or highlights something, convert that into the thing itself.
+       Example: write “Extend HIOC to non-motion action-state sequences” instead of “Proposes future research directions.”
+       Example: write “Environmental features and uncertainty handling are integrated in HIOC” instead of “Highlights integration of environmental features and uncertainty handling.”
+
+  3. **Select visuals** that best support the bullets:  
+     • **Formulas** belonging to the same subsection should stay **on the same slide whenever possible**; if more than 2, prefer `T11_3Img_TopTextBottom`.  
+     • **Do not crop or distort images** - preserve original aspect ratio (minor scaling to fit is fine).
+
+  4. **If an author preference profile is provided, actively optimize for it whenever the paper supports multiple reasonable slide plans.**
+     • Treat the author profile as a primary planning target, not a weak stylistic hint.
+     • Do not use the profile only as a tie-breaker. Use it as a planning target for section splitting, bullet density, text density, visual density, and template choice.
+     • The profile is still subordinate to paper fidelity: never invent claims, visuals, sections, or formulas that are unsupported by the paper evidence.
+     • When the paper supports multiple faithful decompositions, prefer the one that best matches the profile.
+     • If a profile preference cannot be satisfied because the paper lacks supporting content or visuals, ignore that preference instead of hallucinating support for it.
+     • A personalized deck that remains close to a generic default style despite clear profile targets is a failure; you must make measurable deck-level choices that reflect the profile.
+
+  5. **Operationalize the author profile explicitly when present.**
+     • If `numeric_preferences` is present, prefer those concrete targets over coarse label-only guesses for slide density.
+     • You must intentionally move deck-level metrics toward these numeric targets when the paper evidence allows it; do not merely mention the profile and then return a generic plan.
+     • If `planner_target_brief` includes `priority_metrics`, treat them as an explicit target-seeking checklist.
+     • If `blocked_priority_metrics` are present, they represent targets that this paper likely cannot support from available assets. Do not chase those blocked targets by hallucinating structure or visuals.
+     • Especially pay attention to any of these concrete numeric targets when present:
+       - `target_slide_count` / `slide_count_range`
+       - `target_avg_slides_per_section`
+       - `target_avg_bullets_per_slide`
+       - `target_avg_words_per_slide`
+       - `target_fraction_figure_slides`
+       - `target_fraction_table_slides`
+       - `target_fraction_formula_slides`
+       - `target_fraction_text_only_slides`
+       - `target_fraction_multi_visual_slides`
+       - `target_fraction_formula_capable_slides`
+       - `target_fraction_image_right_slides`
+       - `target_fraction_image_left_slides`
+       - `target_fraction_image_top_slides`
+     • `section_splitting_preference`
+       - `coarse`: merge related subsections into broader slides.
+       - `balanced`: use a mix of broad and split slides; split only the most content-rich sections.
+       - `fine_grained`: split complex sections into more slides.
+       - If `numeric_preferences.slide_count_range` or `target_slide_count` is present, you must actively plan toward that total slide count at the whole-deck level rather than treating it as a weak preference.
+     • `bullet_density_preference`
+       - `low`: fewer bullets per slide.
+       - `medium`: about 3-4 top-level bullets per slide unless content strongly requires otherwise; avoid many very sparse 1-2 bullet slides.
+       - `high`: use denser bulleting when legible.
+       - Avoid compensating for low top-level bullet counts by adding many sub-bullets; excessive sub-bullet sprawl counts as higher effective density.
+     • `text_density_preference`
+       - `low`: short, sparse text.
+       - `medium`: moderate text.
+       - `high`: preserve more substantive detail per slide while remaining legible.
+       - if `numeric_preferences.target_avg_text_density_proxy` or `numeric_preferences.avg_text_density_proxy` is present, use it as a deck-level target for how text-heavy the slides should feel relative to prior decks.
+     • `visual_density_preference`
+       - `low`: use visuals selectively.
+       - `medium`: frequent but not maximal visual use.
+       - `high`: favor more visual-heavy layouts when supported.
+     • `figure_usage_preference`, `table_usage_preference`, `formula_usage_preference`
+       - treat these as desired relative frequencies across the whole deck, not per-slide requirements.
+       - prefer to match them over the whole plan while staying faithful to available assets.
+       - if figure/table preference is `low`, do not automatically place an available visual on a slide unless it materially improves that slide’s communication.
+       - if figure/table preference is `high` or `medium`, do not leave many supported slides text-only when a relevant visual could be used faithfully.
+       - if table preference is `medium` or `high` and a subsection has a relevant extracted table, prefer using that table over a generic figure when either could support the same point.
+       - if table preference is `medium` or `high` and the paper has extracted tables for results/evaluation/benchmark/example subsections, you should actively try to place at least one of those tables in the deck unless doing so would clearly hurt legibility or paper fidelity.
+       - for quantitative results or comparison subsections, prefer tables over decorative or redundant figures when the table directly carries the evidence.
+       - if formula preference is `medium` or `high` but the extracted formula asset list for this paper is empty, do not invent formulas; instead satisfy the profile through other available structural and visual signals.
+     • `layout_bias`
+       - if it includes `multi_visual`, prefer multi-visual templates when the subsection genuinely has enough supporting assets and legibility is preserved.
+       - if it includes `formula_capable`, prefer formula-capable templates whenever formulas are available for that subsection.
+       - if it includes `text_only`, prefer T1_TextOnly for subsections whose visuals are optional or weakly relevant; do not force an image onto every eligible slide.
+     • `structure_preferences`
+       - if `prefers_multi_slide_method_section` is `high`, split a content-rich method/approach/system section across multiple slides when the paper supports it.
+       - if `prefers_multi_slide_results_section` is `high`, split a content-rich results/evaluation/analysis section across multiple slides when the paper supports it.
+       - if `prefers_takeaway_slide` is `medium` or `high`, preserve a clear final takeaway/conclusion slide when supported by the paper.
+
+  6. **Use whole-deck planning, not only local subsection decisions.**
+     • Before finalizing the JSON, sanity-check the full deck against the profile:
+       - average density,
+       - total slide count versus any numeric target range,
+       - whether method/results are overly compressed or overly expanded,
+       - whether tables and formulas are underused or overused relative to available assets,
+       - whether `layout_bias` is visible in the chosen templates,
+       - whether concrete target fractions for text-only, multi-visual, or side-image layouts are approximately met,
+       - whether sub-bullet usage is inflating density in a way that contradicts a simple or text-light profile.
+     • If the draft deck is clearly inconsistent with the profile and another equally faithful plan is possible, revise the plan toward the profile before returning JSON.
+     • Make measurable plan-level tradeoffs when needed: merge or split slides, redistribute visuals, or adjust bullet density so the final deck more clearly reflects the profile.
+     • Prefer deck-level consistency over making isolated local decisions that ignore the overall style target.
+     • If the draft is too long for the profile, merge adjacent subsections that support the same narrative point instead of giving each subsection its own slide.
+     • If the draft is too short for the profile, split only the most content-rich method/results sections or create a dedicated challenge / takeaway / objective slide when the paper evidence supports it.
+     • If `bullet_density_preference` is `medium`, prefer combining thin neighboring content into a stronger 3-4 bullet slide rather than producing many sparse slides.
+     • If `text_density_preference` is `high`, preserve more substance per slide before creating a new slide.
+     • If `text_density_preference` is `low` or `visual_density_preference` is `low`, actively suppress non-essential visuals and keep slides simpler rather than using every available asset.
+     • If `text_density_preference` is `medium` or `low`, do not inflate detail by converting every main bullet into multiple sub-bullets unless the profile clearly calls for dense explanatory nesting.
+     • If table preference is `medium` or `high` and extracted tables exist, treat a deck with zero or minimal table use as suspicious unless the matched subsections truly do not support table placement.
+     • If scarce assets are present, spend them on the slides with the highest communication value first rather than distributing them evenly across the deck.
+
+template: |
+ 
+  Instructions:
+  ---
+  4. **Return a single valid JSON object** with the exact schema below - do **NOT** wrap it in markdown.
+     ```json
+     {
+       "slides": [
+         {
+           "section": "<string>",
+           "subsection": "<string>",
+           "template_id": "T?_*",
+           "bullets": [
+             {
+               "text": "<string>",
+               "sub": ["<string>", ...]
+             }, ...
+           ],
+           "images": ["<filename>", ...],
+           "tables": ["<filename>", ...],
+           "formulas": ["<filename>", ...]
+         }, ...
+       ]
+     }
+     ```
+
+  *Use the template-selection rules strictly so that downstream code can rely on them.*  
+  *If `images`, `tables`, and `formulas` are all empty for a slide, its `template_id` must be `T1_TextOnly`.*
+  *Bullets must be direct content summaries, not descriptions of what the paper/section does.*
+  Answer **only** with the JSON.
+
+
+
+  ## You **must** consider each visual's size and aspect ratio
+
+  * For every image / table, compute **aspect = width ÷ height**.  
+  * Choose the slide template and left/right/top placement based on **aspect** *and* absolute size:  
+    - **Wide** (aspect ≥ 1.6) → best placed across the top (template **T4_ImageTop**), including wide tables.  
+    - **Tall / square** (aspect ≤ 1.0) → best placed on the left or right (templates **T2_ImageRight** or **T3_ImageLeft**).  
+    - If a visual's width is nearly the full slide width, prefer **T4_ImageTop** to avoid excessive down-scaling.  
+  * **Never** stretch or crop; only scale proportionally to fit placeholders.
+
+  * When designing slide layouts, you must carefully consider visual density and legibility constraints—especially for images that are wide or contain fine-grained details. 
+    Such images often become unreadable when downscaled to fit dual-visual layouts like T2_ImageRight, T3_ImageLeft, or T5_TwoImages2. 
+    If multiple visuals(such as two images both with an aspect ratio greater than 1.6) are assigned to the same subsection but combining them would result in overcrowding or poor legibility, first check whether one of them fits better semantically in a neighboring subsection (e.g., covering a related topic or dataset). If so, move it to that subsection and assign a layout that presents it alone.
+
+
+
+
+  raw_result:
+  {{ raw_result_json }}
+  figures:
+  {{ figures_json }}
+  formulas:
+  {{ formulas_json }}
+  image_informations:
+  {{ image_informations_json }}
+  table_informations:
+  {{ table_informations_json }}
+  {% if use_author_preferences %}
+  author_preference_profile:
+  {{ author_preference_profile_json }}
+  planner_target_brief:
+  {{ planner_target_brief_json }}
+  numeric_target_summary:
+  {{ numeric_target_summary_json }}
+  priority_metrics:
+  {{ priority_metrics_json }}
+  blocked_priority_metrics:
+  {{ blocked_priority_metrics_json }}
+  {% else %}
+  author_preference_profile:
+  null
+  planner_target_brief: {}
+  numeric_target_summary: {}
+  priority_metrics: []
+  blocked_priority_metrics: []
+  {% endif %}
+repair_system_prompt: |
+  You are SlidePlanRepairer.
+  Your ONLY task is to revise an existing slide-plan JSON so it better matches the provided author preference profile and numeric targets.
+  Treat the existing slide plan as the current personalized draft: preserve paper fidelity, but prefer profile-target improvement over staying close to the draft.
+  Return a single valid JSON object matching exactly the original slide-plan schema.
+  Do not add explanations or markdown.
+
+repair_template: |
+  Revise the existing slide plan so it better matches the provided author preference profile and numeric targets.
+
+  Hard constraints:
+  - Keep the deck faithful to the paper. Do not invent claims, visuals, tables, or formulas.
+  - Treat the existing slide plan as the current personalized draft. Revise it directly rather than regenerating the deck from scratch.
+  - Preserve section order unless a change clearly improves profile alignment.
+  - Preserve subsection coverage by default. Merge or split slides whenever that directly improves profile fit while keeping the same paper evidence.
+  - Prefer meaningful target-seeking edits over minimal edits when the current draft is still far from profile targets.
+  - Keep template choices valid under the original template library and formula rules.
+  - You may merge thin adjacent slides, split overloaded slides, swap templates, rebalance bullets, and move available visuals between nearby slides when the source evidence supports it.
+  - If slide count is a top actionable target, you are explicitly allowed to merge adjacent thin slides or split overloaded slides to move toward the target range.
+  - If low visual density or `text_only` layout bias is part of the profile target, you are explicitly allowed to remove non-essential visuals from slides that remain faithful without them.
+  - If bullet or text density is too high because of nested explanations, reduce sub-bullet sprawl before changing paper coverage.
+  - If a numeric target cannot be satisfied because the paper lacks supporting material, move closer to target without hallucinating support.
+  - Treat the provided `repair_directives` as the highest-priority guidance after paper fidelity.
+  - Stay close to the current draft only when gains are ambiguous. If a faithful change clearly moves measurable targets toward the profile, make the change.
+  - Do not sacrifice multiple priority metrics just to improve one easier metric unless the instructions explicitly mark the others as blocked or unsupported.
+
+  Prioritized metrics to improve first:
+  {{ priority_metrics_json }}
+
+  Top actionable targets to change measurably:
+  {{ actionable_targets_json }}
+
+  Ranked edit brief:
+  {{ edit_brief_json }}
+
+  Author preference profile:
+  {{ author_preference_profile_json }}
+
+  Numeric target summary:
+  {{ numeric_target_summary_json }}
+
+  Current plan summary:
+  {{ current_plan_summary_json }}
+
+  Repair directives:
+  {{ repair_directives_json }}
+
+  Existing slide plan JSON:
+  {{ current_slide_plan_json }}
+
+  Available raw_result:
+  {{ raw_result_json }}
+
+  Available figures:
+  {{ figures_json }}
+
+  Available formulas:
+  {{ formulas_json }}
+
+  Return the repaired slide-plan JSON only.
+  
+
+jinja_args:
+  - raw_result_json
+  - figures_json
+  - formulas_json
+  - image_informations_json
+  - table_informations_json
+  - current_slide_plan_json
+  - current_plan_summary_json
+  - numeric_target_summary_json
+  - repair_directives_json

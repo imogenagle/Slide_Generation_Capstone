@@ -26,7 +26,7 @@ ALL_METRICS = {
     "core_coverage_topic_iou": ("core_coverage", "topic_iou"),
     "geometry_aware_density_gad_geom": ("geometry_aware_density", "gad_geom"),
     "visual_appeal_deck_score": ("visual_appeal", "deck_score"),
-    "layout_correctness_deck_score": ("layout_correctness", "deck_score"),
+    "layout_defects_deck_score": ("layout_defects", "deck_score"),
     "logical_flow_deck_score": ("logical_flow", "deck_score"),
     "paper_faithfulness_deck_score": ("paper_faithfulness", "deck_score"),
 }

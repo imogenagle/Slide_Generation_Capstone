@@ -70,7 +70,7 @@ def build_compare_metric_args(args: argparse.Namespace) -> list[str]:
     if not args.skip_visual_appeal:
         metric_keys.append("visual_appeal_deck_score")
     if not args.skip_layout_correctness:
-        metric_keys.append("layout_correctness_deck_score")
+        metric_keys.append("layout_defects_deck_score")
     if not args.skip_logical_flow:
         metric_keys.append("logical_flow_deck_score")
     if not args.skip_faithfulness:

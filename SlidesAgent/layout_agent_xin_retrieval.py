@@ -36,7 +36,7 @@ from camel.models import ModelFactory
 from camel.agents import ChatAgent
 
 
-BASE_PROMPT_PATH = Path("utils/prompt_templates/layout_agent_xin.yaml")
+BASE_PROMPT_PATH = Path("utils/prompt_templates/layout_agent_xin_retrieval.yaml")
 MAX_RETRIEVAL_REPAIR_ROUNDS = 2
 
 RETRIEVAL_TARGET_KEYS = (
@@ -55,9 +55,78 @@ COUNT_TARGET_TO_OBSERVED_KEY = {
 }
 
 
+def sanitize_retrieval_profile_for_generation(profile: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(profile, dict):
+        return None
+
+    planning = dict(profile.get("planning_preferences") or {})
+    numeric = dict(profile.get("numeric_preferences") or {})
+    fonts = dict(profile.get("font_preferences") or {})
+    colors = dict(profile.get("color_preferences") or {})
+
+    sanitized_planning: Dict[str, Any] = {}
+    if planning.get("target_section_count") is not None:
+        try:
+            sanitized_planning["target_section_count"] = round(float(planning["target_section_count"]), 4)
+        except Exception:
+            pass
+    labels: List[str] = []
+    for raw_label in planning.get("preferred_section_labels") or []:
+        label = str(raw_label or "").strip().lower()
+        if label and label not in labels:
+            labels.append(label)
+    if labels:
+        sanitized_planning["preferred_section_labels"] = labels
+    order_style = str(planning.get("section_order_style") or "").strip().lower()
+    if order_style in {"canonical", "custom", "mixed"}:
+        sanitized_planning["section_order_style"] = order_style
+
+    sanitized_numeric: Dict[str, Any] = {}
+    for key in RETRIEVAL_TARGET_KEYS:
+        value = numeric.get(key)
+        if value is None:
+            continue
+        try:
+            sanitized_numeric[key] = round(float(value), 4)
+        except Exception:
+            continue
+
+    sanitized_fonts: Dict[str, Any] = {}
+    for key in ("title_font_name", "body_font_name"):
+        value = str(fonts.get(key) or "").strip()
+        if value:
+            sanitized_fonts[key] = value
+
+    sanitized_colors: Dict[str, Any] = {}
+    for key in (
+        "target_theme_hex",
+        "target_base_hex",
+        "color_source_paper_id",
+        "color_source_paper_title",
+        "color_source_raw_dir",
+        "color_sample_slide_count",
+    ):
+        value = colors.get(key)
+        if value is not None and value != "":
+            sanitized_colors[key] = value
+
+    return {
+        "author_id": profile.get("author_id"),
+        "profile_version": profile.get("profile_version"),
+        "profile_method": profile.get("profile_method"),
+        "distilled_from": profile.get("distilled_from") or {},
+        "planning_preferences": sanitized_planning,
+        "numeric_preferences": sanitized_numeric,
+        "font_preferences": sanitized_fonts,
+        "color_preferences": sanitized_colors,
+        "retrieval_context": profile.get("retrieval_context") or {},
+    }
+
+
 def build_retrieval_section_preferences(profile: Dict[str, Any] | None) -> Dict[str, Any]:
     if not isinstance(profile, dict):
         return {}
+    profile = sanitize_retrieval_profile_for_generation(profile) or {}
     planning = dict(profile.get("planning_preferences") or {})
     section_prefs: Dict[str, Any] = {}
     target_section_count = planning.get("target_section_count")
@@ -112,6 +181,7 @@ def summarize_retrieval_targets(
 def build_retrieval_target_summary(profile: Dict[str, Any] | None) -> Dict[str, Any]:
     if not isinstance(profile, dict):
         return {}
+    profile = sanitize_retrieval_profile_for_generation(profile) or {}
     numeric = dict(profile.get("numeric_preferences") or {})
     target_summary: Dict[str, Any] = {}
     for key in RETRIEVAL_TARGET_KEYS:
@@ -596,7 +666,9 @@ def generate_slide_plan(args: Any):
         profile_path = Path(author_profile_arg)
         if not profile_path.exists():
             raise FileNotFoundError(f"Retrieval preference profile not found: {profile_path}")
-        author_preference_profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        author_preference_profile = sanitize_retrieval_profile_for_generation(
+            json.loads(profile_path.read_text(encoding="utf-8"))
+        )
     else:
         profile_path = None
 

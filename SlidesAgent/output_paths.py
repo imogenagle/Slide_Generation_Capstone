@@ -164,3 +164,7 @@ def formula_index_path(args: Any) -> Path:
 
 def formula_mode3_index_path(args: Any) -> Path:
     return shared_content_output_dir(args) / "formula_index_formula_mode3.json"
+
+
+def shared_artifact_cost_path(args: Any) -> Path:
+    return shared_content_output_dir(args) / f"<{args.model_name_t}_{args.model_name_v}>_shared_artifact_cost.json"

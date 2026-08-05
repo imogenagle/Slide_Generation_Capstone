@@ -18,6 +18,7 @@ from SlidesAgent.output_paths import (
     output_pptx_path,
     paper_output_dir,
     raw_content_path,
+    shared_artifact_cost_path,
     tables_filtered_path,
 )
  
@@ -36,6 +37,16 @@ theme = {
     'textbox_theme': None,
     'figure_theme': None,
 }
+
+DEFAULT_INPUT_RATE_PER_M = 0.20
+DEFAULT_OUTPUT_RATE_PER_M = 1.25
+
+
+def estimate_cost_usd(input_tokens: float, output_tokens: float) -> float:
+    return (
+        (float(input_tokens or 0) / 1_000_000.0) * DEFAULT_INPUT_RATE_PER_M
+        + (float(output_tokens or 0) / 1_000_000.0) * DEFAULT_OUTPUT_RATE_PER_M
+    )
 
 
 def output_key_from_paper_id(paper_id: str | None) -> str | None:
@@ -316,6 +327,13 @@ def prepare_author_profile(args: argparse.Namespace, distill_author_profile, det
         print(f"[preferences] Reusing existing author profile: {profile_path}", flush=True)
         args.author_profile_path = str(profile_path)
         detail_log['author_profile_path'] = args.author_profile_path
+        try:
+            cached_profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            usage = cached_profile.get("usage") or cached_profile.get("token_usage")
+            if usage:
+                detail_log['author_profile_usage'] = usage
+        except Exception:
+            pass
         return
 
     if not args.author_id:
@@ -348,6 +366,9 @@ def prepare_author_profile(args: argparse.Namespace, distill_author_profile, det
         args.author_profile_path = str(profile_path)
         detail_log['author_profile_path'] = args.author_profile_path
         detail_log['preference_target_excluded_paper_id'] = target_paper_id
+        usage = profile.get("usage") or profile.get("token_usage")
+        if usage:
+            detail_log['author_profile_usage'] = usage
     except ValueError as exc:
         print(f"[preferences] {exc}")
         print("[preferences] No non-target history remains; falling back to baseline planning.")
@@ -411,6 +432,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     agent_config_v = get_agent_config(args.model_name_v)
     total_input_tokens_t, total_output_tokens_t = 0, 0
     total_input_tokens_v, total_output_tokens_v = 0, 0
+    shared_artifact_usage: dict[str, float | int | str] = {}
 
     print(f'slides size: {slide_width_inches} x {slide_height_inches} inches')
 
@@ -446,7 +468,15 @@ def run_pipeline(args: argparse.Namespace) -> None:
             flush=True,
         )
         detail_log['reused_cached_parse_artifacts'] = True
+        artifact_cost_file = shared_artifact_cost_path(args)
+        if artifact_cost_file.exists():
+            try:
+                shared_artifact_usage = json.loads(artifact_cost_file.read_text(encoding="utf-8"))
+                detail_log['shared_artifact_usage'] = shared_artifact_usage
+            except Exception:
+                pass
     else:
+        shared_stage_start = time.time()
         print("[pipeline] Starting raw paper parsing", flush=True)
         input_token, output_token, _parse_time_taken, raw_result = parse_raw(args, agent_config_t, version=2)
         print("[pipeline] Raw paper parsing finished", flush=True)
@@ -484,6 +514,24 @@ def run_pipeline(args: argparse.Namespace) -> None:
         input_token, output_token, _formula_match_time = gen_formula_match_v1(args, agent_config_t, raw_result)
         total_input_tokens_t += input_token
         total_output_tokens_t += output_token
+        shared_stage_time = time.time() - shared_stage_start
+        shared_artifact_usage = {
+            'input_tokens_t': int(total_input_tokens_t),
+            'output_tokens_t': int(total_output_tokens_t),
+            'input_tokens_v': 0,
+            'output_tokens_v': 0,
+            'total_input_tokens': int(total_input_tokens_t),
+            'total_output_tokens': int(total_output_tokens_t),
+            'total_tokens': int(total_input_tokens_t + total_output_tokens_t),
+            'time_seconds': round(shared_stage_time, 2),
+            'estimated_cost_usd': round(estimate_cost_usd(total_input_tokens_t, total_output_tokens_t), 6),
+            'input_rate_per_m': DEFAULT_INPUT_RATE_PER_M,
+            'output_rate_per_m': DEFAULT_OUTPUT_RATE_PER_M,
+        }
+        artifact_cost_file = shared_artifact_cost_path(args)
+        artifact_cost_file.parent.mkdir(parents=True, exist_ok=True)
+        artifact_cost_file.write_text(json.dumps(shared_artifact_usage, indent=2), encoding="utf-8")
+        detail_log['shared_artifact_usage'] = shared_artifact_usage
 
     input_token, output_token, _time_taken = generate_slide_plan(args)
     total_input_tokens_t += input_token
@@ -505,6 +553,69 @@ def run_pipeline(args: argparse.Namespace) -> None:
             'output_tokens_v': total_output_tokens_v,
             'time_taken': time_taken,
         }
+        shared_input_tokens = int(shared_artifact_usage.get('total_input_tokens', 0) or 0)
+        shared_output_tokens = int(shared_artifact_usage.get('total_output_tokens', 0) or 0)
+        shared_total_tokens = int(shared_artifact_usage.get('total_tokens', shared_input_tokens + shared_output_tokens) or (shared_input_tokens + shared_output_tokens))
+        shared_estimated_cost_usd = shared_artifact_usage.get('estimated_cost_usd')
+        if shared_artifact_usage:
+            log_data.update(
+                {
+                    'shared_artifact_input_tokens': shared_input_tokens,
+                    'shared_artifact_output_tokens': shared_output_tokens,
+                    'shared_artifact_total_tokens': shared_total_tokens,
+                    'shared_artifact_time_seconds': shared_artifact_usage.get('time_seconds'),
+                    'shared_artifact_estimated_cost_usd': shared_estimated_cost_usd,
+                    'full_run_input_tokens': total_input_tokens_t + total_input_tokens_v + shared_input_tokens,
+                    'full_run_output_tokens': total_output_tokens_t + total_output_tokens_v + shared_output_tokens,
+                    'full_run_total_tokens': total_input_tokens_t + total_output_tokens_t + total_input_tokens_v + total_output_tokens_v + shared_total_tokens,
+                    'full_run_estimated_cost_usd': round(
+                        estimate_cost_usd(
+                            total_input_tokens_t + total_input_tokens_v + shared_input_tokens,
+                            total_output_tokens_t + total_output_tokens_v + shared_output_tokens,
+                        ),
+                        6,
+                    ),
+                }
+            )
+        profile_usage = detail_log.get('author_profile_usage') or {}
+        if profile_usage:
+            profile_input_tokens = int(profile_usage.get('prompt_tokens', 0) or profile_usage.get('input_tokens', 0) or 0)
+            profile_output_tokens = int(profile_usage.get('completion_tokens', 0) or profile_usage.get('output_tokens', 0) or 0)
+            profile_total_tokens = int(profile_usage.get('total_tokens', profile_input_tokens + profile_output_tokens) or (profile_input_tokens + profile_output_tokens))
+            profile_estimated_cost_usd = profile_usage.get('estimated_cost_usd')
+            log_data.update(
+                {
+                    'profile_input_tokens': profile_input_tokens,
+                    'profile_output_tokens': profile_output_tokens,
+                    'profile_total_tokens': profile_total_tokens,
+                    'profile_estimated_cost_usd': profile_estimated_cost_usd,
+                    'full_personalized_input_tokens': total_input_tokens_t + total_input_tokens_v + profile_input_tokens,
+                    'full_personalized_output_tokens': total_output_tokens_t + total_output_tokens_v + profile_output_tokens,
+                    'full_personalized_total_tokens': total_input_tokens_t + total_output_tokens_t + total_input_tokens_v + total_output_tokens_v + profile_total_tokens,
+                    'full_personalized_estimated_cost_usd': round(
+                        estimate_cost_usd(
+                            total_input_tokens_t + total_input_tokens_v + profile_input_tokens,
+                            total_output_tokens_t + total_output_tokens_v + profile_output_tokens,
+                        ),
+                        6,
+                    ),
+                }
+            )
+            if shared_artifact_usage:
+                log_data.update(
+                    {
+                        'full_personalized_with_shared_input_tokens': total_input_tokens_t + total_input_tokens_v + profile_input_tokens + shared_input_tokens,
+                        'full_personalized_with_shared_output_tokens': total_output_tokens_t + total_output_tokens_v + profile_output_tokens + shared_output_tokens,
+                        'full_personalized_with_shared_total_tokens': total_input_tokens_t + total_output_tokens_t + total_input_tokens_v + total_output_tokens_v + profile_total_tokens + shared_total_tokens,
+                        'full_personalized_with_shared_estimated_cost_usd': round(
+                            estimate_cost_usd(
+                                total_input_tokens_t + total_input_tokens_v + profile_input_tokens + shared_input_tokens,
+                                total_output_tokens_t + total_output_tokens_v + profile_output_tokens + shared_output_tokens,
+                            ),
+                            6,
+                        ),
+                    }
+                )
         json.dump(log_data, f, indent=4)
 
     print("✅ all files exist……")
